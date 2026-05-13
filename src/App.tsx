@@ -2,24 +2,20 @@ import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-do
 import { useRealtime } from './hooks/useRealtime';
 import { useUser } from './hooks/useUser';
 import { useStore } from './store/useStore';
-import { Brain, LayoutDashboard, History, Zap, Settings, BarChart2, Menu, X, Clock, Power, Wand2, Key, LogOut, User, ShieldCheck} from 'lucide-react';
+import { LayoutDashboard, History, Zap, Settings, Menu, X, Clock, Power, Bot, FlaskConical } from 'lucide-react';
 import { useState, useEffect, ReactNode } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
 import ErrorBoundary from './components/ErrorBoundary';
 import AuthGate from './components/AuthGate';
 import BalanceIndicator from './components/BalanceIndicator';
+
 // Pages
-import Dashboard from './pages/Dashboard';
-import Trades from './pages/Trades';
-import Signals from './pages/Signals';
-import SymbolDetail from './pages/SymbolDetail';
-import SettingsPage from './pages/SettingsPage';
-import BacktestPage from './pages/BacktestPage';
-import AIAnalystPage from './pages/AIAnalyst';
-import AdminPage from './pages/Admin';
-import OpenClawPage from './pages/OpenClaw';
-import ApiKeysPage from './pages/ApiKeys';
+import CommandCenter from './pages/CommandCenter';
+import AgentIdentity from './pages/AgentIdentity';
+import StrategyLab from './pages/StrategyLab';
+import TradeHistory from './pages/TradeHistory';
+import Config from './pages/Config';
 
 
 function PageWrapper({ children }: { children: ReactNode }) {
@@ -37,7 +33,7 @@ function PageWrapper({ children }: { children: ReactNode }) {
   );
 }
 
-function NavItem({ to, icon: Icon, label, onClick }: { to: string; icon: any; label: string; onClick?: () => void }) {
+function NavItem({ to, icon: Icon, label, badge, onClick }: { to: string; icon: any; label: string; badge?: string; onClick?: () => void }) {
   const location = useLocation();
   const active = location.pathname === to;
 
@@ -47,13 +43,18 @@ function NavItem({ to, icon: Icon, label, onClick }: { to: string; icon: any; la
       onClick={onClick}
       className={cn(
         "flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200",
-        active 
-          ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" 
+        active
+          ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
           : "text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/50"
       )}
     >
       <Icon size={20} />
       <span className="font-medium">{label}</span>
+      {badge && (
+        <span className="ml-auto text-[9px] px-1.5 py-0.5 rounded-md bg-violet-500/20 text-violet-400 font-bold uppercase tracking-tight border border-violet-500/30">
+          {badge}
+        </span>
+      )}
     </Link>
   );
 }
@@ -102,25 +103,21 @@ function AppInner() {
             <div className="flex items-center gap-3 mb-8 px-2 justify-between">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 bg-emerald-500 rounded-xl flex items-center justify-center shadow-lg shadow-emerald-500/20">
-                  <BarChart2 className="text-zinc-950" size={24} strokeWidth={3} />
+                  <Bot className="text-zinc-950" size={24} strokeWidth={3} />
                 </div>
                 <div>
                   <h1 className="text-xl font-bold tracking-tight leading-none">SignalDeck</h1>
-                  <span className="text-[10px] text-zinc-500 font-mono tracking-widest uppercase">v2.4.0-stable</span>
+                  <span className="text-[10px] text-zinc-500 font-mono tracking-widest uppercase">v3.0.0-beta</span>
                 </div>
               </div>
               {authUsername && logoutFn && (
                 <div className="flex items-center gap-1">
-                  <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-zinc-800/50 text-[10px] font-bold text-zinc-400">
-                    <User size={11} />
-                    <span className="truncate max-w-[80px]">{authUsername}</span>
-                  </div>
                   <button
                     onClick={logoutFn}
                     className="p-2 text-zinc-500 hover:text-rose-400 hover:bg-rose-400/10 rounded-lg transition-all"
                     title="Log out"
                   >
-                    <LogOut size={18} />
+                    <X size={18} />
                   </button>
                 </div>
               )}
@@ -130,19 +127,15 @@ function AppInner() {
           {/* Navigation Links */}
           <nav className="flex-1 px-4 py-2 space-y-1 overflow-y-auto custom-scrollbar">
             <div className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest px-4 mb-2 mt-4 opacity-50">Core</div>
-            <NavItem to="/" icon={LayoutDashboard} label="Dashboard" onClick={() => setIsMobileMenuOpen(false)} />
-            <NavItem to="/analyst" icon={Brain} label="AI Analyst" onClick={() => setIsMobileMenuOpen(false)} />
-            <NavItem to="/openclaw" icon={Wand2} label="OpenClaw" onClick={() => setIsMobileMenuOpen(false)} />
-            
-            <div className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest px-4 mb-2 mt-6 opacity-50">Market Operations</div>
+            <NavItem to="/" icon={LayoutDashboard} label="Command Center" onClick={() => setIsMobileMenuOpen(false)} />
+            <NavItem to="/agent" icon={Bot} label="Agent Identity" badge="NEW · Hackathon" onClick={() => setIsMobileMenuOpen(false)} />
+
+            <div className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest px-4 mb-2 mt-6 opacity-50">Operations</div>
+            <NavItem to="/lab" icon={FlaskConical} label="Strategy Lab" onClick={() => setIsMobileMenuOpen(false)} />
             <NavItem to="/trades" icon={History} label="Trade History" onClick={() => setIsMobileMenuOpen(false)} />
-            <NavItem to="/signals" icon={Zap} label="Signal Feed" onClick={() => setIsMobileMenuOpen(false)} />
-            
-            <div className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest px-4 mb-2 mt-6 opacity-50">Strategy & Auth</div>
-            <NavItem to="/backtest" icon={BarChart2} label="Backtester" onClick={() => setIsMobileMenuOpen(false)} />
-            <NavItem to="/admin" icon={ShieldCheck} label="Admin" onClick={() => setIsMobileMenuOpen(false)} />
-            <NavItem to="/apikeys" icon={Key} label="API Keys" />
-            <NavItem to="/settings" icon={Settings} label="Bot Config" onClick={() => setIsMobileMenuOpen(false)} />
+
+            <div className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest px-4 mb-2 mt-6 opacity-50">System</div>
+            <NavItem to="/settings" icon={Settings} label="Config" onClick={() => setIsMobileMenuOpen(false)} />
           </nav>
 
           {/* Sidebar Footer */}
@@ -155,19 +148,19 @@ function AppInner() {
                 </div>
                 <ClockDisplay />
               </div>
-              <button 
+              <button
                 onClick={() => setPaused(!settings?.paused)}
                 className={cn(
                   "p-2.5 rounded-xl transition-all shadow-lg active:scale-95",
-                  settings?.paused 
-                    ? "bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500/20" 
+                  settings?.paused
+                    ? "bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500/20"
                     : "bg-rose-500/10 text-rose-500 hover:bg-rose-500/20"
                 )}
               >
                 <Power size={18} />
               </button>
             </div>
-            
+
             <BalanceIndicator size="sm" />
           </div>
         </div>
@@ -178,26 +171,25 @@ function AppInner() {
         {/* Responsive Header / Top Bar */}
         <header className="flex items-center justify-between h-16 md:h-20 px-4 md:px-8 bg-zinc-900/80 border-b border-zinc-800/50 backdrop-blur-xl sticky top-0 z-40">
           <div className="flex items-center gap-4">
-             <div className="lg:hidden flex items-center gap-3">
-                <div className="w-8 h-8 bg-emerald-500 rounded-lg flex items-center justify-center">
-                  <BarChart2 className="text-zinc-950" size={18} strokeWidth={3} />
-                </div>
-                <h1 className="text-lg font-bold tracking-tight">SignalDeck</h1>
-             </div>
-             
-             <ClockDisplay extended />
+            <div className="lg:hidden flex items-center gap-3">
+              <div className="w-8 h-8 bg-emerald-500 rounded-lg flex items-center justify-center">
+                <Bot className="text-zinc-950" size={18} strokeWidth={3} />
+              </div>
+              <h1 className="text-lg font-bold tracking-tight">SignalDeck</h1>
+            </div>
+            <ClockDisplay extended />
           </div>
 
           <div className="flex items-center gap-2 md:gap-4">
-             <div className="hidden sm:block">
-               <BalanceIndicator hideLabel />
-             </div>
-             <button 
-               className="lg:hidden p-2.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-xl transition-all border border-zinc-700/50"
-               onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-             >
-               {isMobileMenuOpen ? <X size={20} /> : <Menu size={20} />}
-             </button>
+            <div className="hidden sm:block">
+              <BalanceIndicator hideLabel />
+            </div>
+            <button
+              className="lg:hidden p-2.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-xl transition-all border border-zinc-700/50"
+              onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+            >
+              {isMobileMenuOpen ? <X size={20} /> : <Menu size={20} />}
+            </button>
           </div>
         </header>
 
@@ -213,16 +205,11 @@ function AppInner() {
               className="h-full"
             >
               <Routes location={location}>
-                <Route path="/" element={<PageWrapper><Dashboard /></PageWrapper>} />
-                <Route path="/trades" element={<PageWrapper><Trades /></PageWrapper>} />
-                <Route path="/signals" element={<PageWrapper><Signals /></PageWrapper>} />
-                <Route path="/backtest" element={<PageWrapper><BacktestPage /></PageWrapper>} />
-                <Route path="/symbols/:symbol/*" element={<PageWrapper><SymbolDetail /></PageWrapper>} />
-                <Route path="/analyst" element={<PageWrapper><AIAnalystPage /></PageWrapper>} />
-                <Route path="/admin" element={<PageWrapper><AdminPage /></PageWrapper>} />
-                <Route path="/openclaw" element={<PageWrapper><OpenClawPage /></PageWrapper>} />
-                <Route path="/settings" element={<PageWrapper><SettingsPage /></PageWrapper>} />
-                <Route path="/apikeys" element={<PageWrapper><ApiKeysPage /></PageWrapper>} />
+                <Route path="/" element={<PageWrapper><CommandCenter /></PageWrapper>} />
+                <Route path="/agent" element={<PageWrapper><AgentIdentity /></PageWrapper>} />
+                <Route path="/lab" element={<PageWrapper><StrategyLab /></PageWrapper>} />
+                <Route path="/trades" element={<PageWrapper><TradeHistory /></PageWrapper>} />
+                <Route path="/settings" element={<PageWrapper><Config /></PageWrapper>} />
               </Routes>
             </motion.div>
           </AnimatePresence>

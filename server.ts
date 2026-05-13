@@ -713,22 +713,55 @@ async function startServer() {
         await ex.loadMarkets();
       }
 
-      const isSwapMode = ['swap', 'future'].includes(process.env.BYBIT_DEFAULT_TYPE || '');
+      // Use user's actual account type, not the global env var
+      const accountType = userExObj?.accountType || process.env.BYBIT_DEFAULT_TYPE || 'spot';
+      const isSwapMode = ['swap', 'future'].includes(accountType);
+
       const symbolMap: Record<string, string> = {};
       for (const s of symbols) {
-        if (ex.markets[s]) {
-          symbolMap[s] = s;
-        } else if (isSwapMode && s.includes('/') && !s.includes(':')) {
-           const [base, quote] = s.split('/');
-           const swapKey = `${s}:${quote}`;
-           if (ex.markets[swapKey]) {
-             symbolMap[s] = swapKey;
-           } else if (ex.markets[`${base}/${quote}:USDT`]) {
-             symbolMap[s] = `${base}/${quote}:USDT`;
-           }
-        } else if (s.includes(':')) {
+        // 1. Direct match
+        if (ex.markets[s]) { symbolMap[s] = s; continue; }
+
+        // 2. Spot symbol + swap mode → try swap suffix variants
+        if (isSwapMode && s.includes('/') && !s.includes(':')) {
+          const [base, quote] = s.split('/');
+          const swapKey = `${s}:${quote}`;
+          if (ex.markets[swapKey]) { symbolMap[s] = swapKey; continue; }
+          if (ex.markets[`${base}/${quote}:USDT`]) { symbolMap[s] = `${base}/${quote}:USDT`; continue; }
+          // Also try perpetual suffix
+          if (ex.markets[`${base}/${quote}:USDT- perpetual`] || ex.markets[`${s}:USDT-PERP`]) {
+            const perpKey = Object.keys(ex.markets).find(k =>
+              k.startsWith(`${base}/${quote}:`) && ex.markets[k]?.type === 'swap'
+            );
+            if (perpKey) { symbolMap[s] = perpKey; continue; }
+          }
+        }
+
+        // 3. Swap symbol in spot mode → strip suffix
+        if (!isSwapMode && s.includes(':')) {
           const basePart = s.split(':')[0];
-          if (ex.markets[basePart]) symbolMap[s] = basePart;
+          if (ex.markets[basePart]) { symbolMap[s] = basePart; continue; }
+        }
+
+        // 4. Swap mode: already has colon → check if it exists as-is
+        if (s.includes(':') && ex.markets[s]) {
+          symbolMap[s] = s; continue;
+        }
+
+        // 5. Last resort: fuzzy match by base symbol
+        if (s.includes('/')) {
+          const base = s.split('/')[0];
+          const fuzzy = Object.keys(ex.markets).find(k =>
+            k.startsWith(`${base}/`) && ex.markets[k]?.active !== false
+          );
+          if (fuzzy) {
+            console.warn(`[prices] Fuzzy match: ${s} → ${fuzzy}`);
+            symbolMap[s] = fuzzy;
+          } else {
+            console.warn(`[prices] Symbol not found in markets: ${s}`);
+          }
+        } else {
+          console.warn(`[prices] Symbol not found in markets: ${s}`);
         }
       }
 
