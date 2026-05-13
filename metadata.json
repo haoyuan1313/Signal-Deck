@@ -1,0 +1,6 @@
+{
+  "name": "SignalDeck",
+  "description": "Production-grade SMC crypto bot dashboard with Supabase realtime integration, performance analytics, and bot configuration management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["Real-time Data", "Financial Analytics", "Bot Integration"]
+}
