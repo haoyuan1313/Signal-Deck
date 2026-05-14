@@ -668,7 +668,6 @@ Return ONLY valid JSON — no markdown, no explanation outside JSON:
         // Break even
         if (pnl_r >= 1.0 && !trade.be_armed) {
           await sb.from('trades').update({ sl: trade.entry, be_armed: true }).eq('id', trade.id);
-          await this.notifyTelegram(`🛡️ *Break Even Armed*\n${trade.symbol}`);
         }
 
         const elapsedMins  = (Date.now() - new Date(trade.opened_at).getTime()) / 60000;
@@ -712,7 +711,6 @@ Return ONLY valid JSON — no markdown, no explanation outside JSON:
 
           const reason = isTP ? 'TP 🟢' : isSL ? 'SL 🔴' : isTimeout ? 'TIMEOUT ⌛' : 'STAGNATION 🛑';
           await this.logStatus(`🏁 CLOSED ${trade.symbol} | ${reason} | PnL: ${pnlFinal.toFixed(2)}R`, 'accept');
-          await this.notifyTelegram(`🏁 *Trade Closed*\n${trade.symbol}\nReason: ${reason}\nFinal R: ${pnlFinal.toFixed(2)}`);
         } else {
           await sb.from('trades').update({ bars_held: Math.floor(elapsedMins) }).eq('id', trade.id);
         }
@@ -886,9 +884,6 @@ Return ONLY valid JSON — no markdown, no explanation outside JSON:
             }
 
             await this.logStatus(`📐 SETUP DETECTED ${symbol}: ${setup.direction?.toUpperCase()}`, 'accept');
-            await this.notifyTelegram(
-              `📐 *SMC SETUP DETECTED*\n*Symbol:* ${symbol}\n*Direction:* ${setup.direction?.toUpperCase()}\n*HTF:* ${setup.htf_trend}\n*Price:* ${setup.price?.toFixed(4)}\n*SL:* ${setup.sl?.toFixed(4)}\n*TP:* ${setup.tp?.toFixed(4)}`,
-            );
 
             if (sb) {
               const fifteenMinsAgo = new Date(Date.now() - 15 * 60 * 1000).toISOString();
