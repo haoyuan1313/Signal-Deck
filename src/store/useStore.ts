@@ -46,8 +46,9 @@ export const useStore = create<SignalStore>((set, get) => ({
   logoutFn: null,
   fullHistoryLoaded: false,
 
-  fetchInitialData: async (silent = false, userId = 'demo-user') => {
-    if (!silent) set({ loading: true, userId });
+  fetchInitialData: async (silent = false, userId?: string) => {
+    const uid = userId || get().userId;
+    if (!silent) set({ loading: true, userId: uid });
 
     let timeoutId: any = null;
     if (!silent) {
@@ -65,11 +66,11 @@ export const useStore = create<SignalStore>((set, get) => ({
       let settingsData: any = null;
       let settingsError: any = null;
 
-      if (userId && userId !== 'demo-user') {
+      if (uid && uid !== 'demo-user') {
         const res = await supabase
           .from('bot_settings')
           .select('*')
-          .eq('user_id', userId)
+          .eq('user_id', uid)
           .maybeSingle();
         settingsData  = res.data;
         settingsError = res.error;
@@ -119,8 +120,8 @@ export const useStore = create<SignalStore>((set, get) => ({
       }
 
       // ── Trades / signals / logs / heartbeat ──────────────────────────────────
-      const tradesQuery = userId && userId !== 'demo-user'
-        ? supabase.from('trades').select('*').eq('user_id', userId).order('opened_at', { ascending: false }).limit(200)
+      const tradesQuery = uid && uid !== 'demo-user'
+        ? supabase.from('trades').select('*').eq('user_id', uid).order('opened_at', { ascending: false }).limit(200)
         : supabase.from('trades').select('*').order('opened_at', { ascending: false }).limit(200);
 
       const [tradesRes, signalsRes, heartbeatRes, logsRes] = await Promise.all([
@@ -148,7 +149,7 @@ export const useStore = create<SignalStore>((set, get) => ({
         botLive,
         lastHeartbeat: lastPing || null,
         loading: false,
-        userId,
+        userId: uid,
       });
     } catch (err) {
       console.error('Store: fetchInitialData error:', err);
@@ -161,7 +162,7 @@ export const useStore = create<SignalStore>((set, get) => ({
     if (get().fullHistoryLoaded) return;
     try {
       const userId = get().userId;
-      const query  = userId && userId !== 'demo-user'
+      const query  = uid && uid !== 'demo-user'
         ? supabase.from('trades').select('*').eq('user_id', userId).eq('status', 'closed').order('opened_at', { ascending: false })
         : supabase.from('trades').select('*').eq('status', 'closed').order('opened_at', { ascending: false });
 
