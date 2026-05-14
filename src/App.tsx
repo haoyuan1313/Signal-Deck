@@ -103,7 +103,14 @@ function AppInner() {
             <div className="flex items-center gap-3 mb-8 px-2 justify-between">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 bg-emerald-500 rounded-xl flex items-center justify-center shadow-lg shadow-emerald-500/20">
-                  <Bot className="text-zinc-950" size={24} strokeWidth={3} />
+                  <svg width="24" height="24" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <rect width="32" height="32" rx="8" fill="#10b981" opacity="0.15"/>
+                    <path d="M6 20 L14 12 L20 18 L26 8" stroke="#6ee7b7" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+                    <circle cx="6" cy="20" r="1.5" fill="#6ee7b7"/>
+                    <circle cx="14" cy="12" r="1.5" fill="#6ee7b7"/>
+                    <circle cx="20" cy="18" r="1.5" fill="#6ee7b7"/>
+                    <circle cx="26" cy="8" r="1.5" fill="#6ee7b7"/>
+                  </svg>
                 </div>
                 <div>
                   <h1 className="text-xl font-bold tracking-tight leading-none">SignalDeck</h1>
