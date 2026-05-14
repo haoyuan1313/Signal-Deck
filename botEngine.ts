@@ -93,7 +93,9 @@ export async function startAllUserBots(): Promise<void> {
   }
 
   for (const keyRecord of keys) {
-    await startBotForUser(keyRecord);
+    if (!activeBots.has(keyRecord.user_id)) {
+      await startBotForUser(keyRecord);
+    }
   }
 
   console.log(`Bot: Started ${activeBots.size} user bot(s).`);
