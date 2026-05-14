@@ -327,7 +327,11 @@ export default function AgentIdentity() {
                   <div className="w-16 h-16 bg-violet-500/20 rounded-full flex items-center justify-center border-2 border-violet-500/30 mx-auto mb-3">
                     <Hash size={28} className="text-violet-400" />
                   </div>
-                  <p className="text-sm text-white font-bold">Token #{nft.tokenId}</p>
+                  <p className="text-sm text-white font-bold">
+                    {nft.tokenId && nft.tokenId !== 'unknown'
+                      ? `Token #${nft.tokenId}`
+                      : 'Agent Registered'}
+                  </p>
                   {nft.txHash && (
                     <a
                       href={`https://explorer.mantle.xyz/tx/${nft.txHash}`}
@@ -335,7 +339,7 @@ export default function AgentIdentity() {
                       rel="noopener noreferrer"
                       className="text-[10px] text-violet-400 hover:underline flex items-center justify-center gap-1 mt-1"
                     >
-                      View mint tx <ExternalLink size={10} />
+                      {nft.txHash.slice(0, 14)}... <ExternalLink size={10} />
                     </a>
                   )}
                 </div>
@@ -361,13 +365,13 @@ export default function AgentIdentity() {
                 </div>
                 <p className="text-sm text-zinc-400 mb-3">
                   {mintError?.includes('not configured')
-                    ? 'ERC-8004 contract address pending'
+                    ? 'ERC-8004 address not set'
                     : 'Agent NFT not yet minted'}
                 </p>
                 {mintError && (
                   <p className="text-xs text-amber-400 mb-3 bg-amber-500/10 rounded-lg py-1 px-2">
                     {mintError.includes('not configured')
-                      ? 'Official ERC-8004 address not yet announced by Mantle. Will be available before Demo Day.'
+                      ? 'Set ERC8004_IDENTITY_REGISTRY in environment to enable minting.'
                       : mintError}
                   </p>
                 )}
