@@ -291,11 +291,13 @@ export function getRetryQueueStatus() {
 
 export async function mintAgentNFT(metadata: NFTMetadata): Promise<{ tokenId: string; txHash: string }> {
   const contractAddress =
-    process.env.ERC8004_CONTRACT_ADDRESS || process.env.VITE_ERC8004_CONTRACT_ADDRESS;
+    process.env.ERC8004_IDENTITY_REGISTRY ||
+    process.env.ERC8004_CONTRACT_ADDRESS ||
+    process.env.VITE_ERC8004_CONTRACT_ADDRESS;
 
   if (!contractAddress || contractAddress === 'TBD') {
     throw new Error(
-      'ERC8004_CONTRACT_ADDRESS not configured. Set ERC8004_CONTRACT_ADDRESS in environment.',
+      'ERC-8004 contract address not configured. Set ERC8004_IDENTITY_REGISTRY in environment.',
     );
   }
 
