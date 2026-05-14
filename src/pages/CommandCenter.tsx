@@ -1,5 +1,5 @@
 import { useStore } from '../store/useStore';
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useRef } from 'react';
 import { formatR, formatCurrency, cn, formatDate, timeAgo } from '../lib/utils';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts';
 import { ArrowUpRight, ArrowDownRight, TrendingUp, Activity, Package, Percent, ExternalLink, Terminal, Brain, Bot } from 'lucide-react';
@@ -49,6 +49,13 @@ export default function CommandCenter() {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<'all' | 'live' | 'paper'>('all');
   const [mantlePerf, setMantlePerf] = useState<any>(null);
+  const consoleRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (consoleRef.current) {
+      consoleRef.current.scrollTop = consoleRef.current.scrollHeight;
+    }
+  }, [logs]);
 
   const fetchMantlePerformance = async () => {
     try {
@@ -243,37 +250,54 @@ export default function CommandCenter() {
         </div>
 
         {/* Bot console */}
-        <div className="md:col-span-2 lg:col-span-1 bg-black rounded-3xl p-6 flex flex-col h-[400px] border border-zinc-800 shadow-2xl overflow-hidden group">
-          <div className="flex items-center justify-between mb-4 shrink-0">
+        <div className="md:col-span-2 lg:col-span-1 bg-zinc-950 rounded-3xl p-5 flex flex-col h-[400px] border border-zinc-800 overflow-hidden">
+          <div className="flex items-center justify-between mb-3 shrink-0">
             <div className="flex items-center gap-2">
-              <Terminal size={18} className="text-emerald-500" />
+              <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
               <h3 className="font-bold text-xs uppercase tracking-widest text-zinc-400">Engine Console</h3>
+              {logs.length > 0 && <span className="text-[10px] text-zinc-600 font-mono">{logs.length}</span>}
             </div>
-            <div className="flex gap-1.5">
-              <div className="w-2.5 h-2.5 rounded-full bg-rose-500/20" />
-              <div className="w-2.5 h-2.5 rounded-full bg-amber-500/20" />
-              <div className="w-2.5 h-2.5 rounded-full bg-emerald-500/20" />
+            <div className="flex items-center gap-1 text-[9px] text-zinc-600 font-mono">
+              <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-sm bg-emerald-500" />Exec</span>
+              <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-sm bg-rose-500" />Skip</span>
+              <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-sm bg-zinc-500" />Scan</span>
             </div>
           </div>
-          <div className="flex-1 bg-zinc-950/80 rounded-2xl p-5 font-mono text-[10px] overflow-y-auto space-y-2 custom-scrollbar scroll-smooth border border-zinc-900">
-            {logs.length > 0 ? logs.map(log => (
-              <div key={log.id} className="flex gap-3 leading-relaxed">
-                <span className="text-zinc-700 shrink-0 select-none">#{log.created_at.split('T')[1].slice(0, 8)}</span>
-                <span className={cn(
-                  'break-all',
-                  log.type === 'loop' && 'text-emerald-500 font-bold',
-                  log.type === 'check' && 'text-zinc-500',
-                  log.type === 'accept' && 'text-white bg-emerald-500/20 px-1 rounded',
-                  log.type === 'reject' && 'text-rose-400',
-                  log.type === 'info' && 'text-zinc-500',
-                )}>
-                  {log.message}
-                </span>
-              </div>
-            )) : (
-              <div className="flex flex-col items-center justify-center h-full text-zinc-700 italic gap-4">
-                <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-emerald-500/20 border-zinc-900" />
-                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-600">Initializing...</p>
+          <div ref={consoleRef} className="flex-1 overflow-y-auto space-y-1 font-mono text-[10px] leading-relaxed scroll-smooth">
+            {logs.length > 0 ? (
+              // Show last 50 entries, newest at bottom
+              logs.slice(-50).map((log, i) => {
+                const time = log.created_at.split('T')[1]?.slice(0, 8) || '';
+                const isExec = log.type === 'accept';
+                const isSkip = log.type === 'reject';
+                const isScan = log.type === 'check' || log.type === 'loop';
+                return (
+                  <div key={log.id || i} className="flex gap-2 items-start opacity-80 hover:opacity-100 transition-opacity">
+                    <span className="text-zinc-700 shrink-0 w-[52px] text-right">{time}</span>
+                    <span className={cn(
+                      'shrink-0 w-[32px] text-center text-[9px] font-bold uppercase rounded px-0.5',
+                      isExec && 'text-emerald-400 bg-emerald-400/10',
+                      isSkip && 'text-rose-400 bg-rose-400/10',
+                      isScan && 'text-zinc-500 bg-zinc-500/10',
+                      !isExec && !isSkip && !isScan && 'text-zinc-400 bg-zinc-400/10',
+                    )}>
+                      {isExec ? 'EXEC' : isSkip ? 'SKIP' : isScan ? 'SCAN' : 'INFO'}
+                    </span>
+                    <span className={cn(
+                      isExec && 'text-white',
+                      isSkip && 'text-rose-300',
+                      isScan && 'text-zinc-500',
+                      !isExec && !isSkip && !isScan && 'text-zinc-400',
+                    )}>
+                      {log.message}
+                    </span>
+                  </div>
+                );
+              })
+            ) : (
+              <div className="flex flex-col items-center justify-center h-full text-zinc-700 gap-2">
+                <Terminal size={24} className="text-zinc-800" />
+                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-600">Waiting for signals...</p>
               </div>
             )}
           </div>
