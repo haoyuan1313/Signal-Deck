@@ -375,7 +375,71 @@ export class SMCBot {
     }
   }
 
-  private async executeTrade(symbol: string, setup: StrategySetup) {
+  // ── AI Confidence Scoring ────────────────────────────────────────────────
+  // Calls Claude to evaluate a trade setup. Non-blocking — if Claude fails,
+  // returns 0 (deterministic SMC fallback). Never throws (F-003).
+
+  private async scoreAIConfidence(setup: StrategySetup, symbol: string): Promise<{ confidence: number; reasoning: string }> {
+    try {
+      const anthropicKey = process.env.ANTHROPIC_API_KEY;
+      if (!anthropicKey) return { confidence: 0, reasoning: 'ANTHROPIC_API_KEY not set' };
+
+      const prompt = `You are an SMC (Smart Money Concepts) trade evaluator. Score the following trade setup on a scale of 0-10000 (basis points).
+
+Setup details:
+- Symbol: ${symbol}
+- Direction: ${setup.direction}
+- Entry price: ${setup.price?.toFixed(4)}
+- Stop Loss: ${setup.sl?.toFixed(4)}
+- Take Profit: ${setup.tp?.toFixed(4)}
+- HTF Trend: ${setup.htf_trend}
+- Session: ${setup.session || 'unknown'}
+- ATR: ${setup.atr?.toFixed(4) || 'N/A'}
+
+Score based on:
+1. HTF trend alignment (higher = stronger trend)
+2. Risk/reward quality (higher RR = better)
+3. Session quality (London/NY > Asian/Late)
+4. Overall setup cleanliness
+
+Return ONLY valid JSON — no markdown, no explanation outside JSON:
+{"confidence": <0-10000>, "reasoning": "<one sentence>"}`;
+
+      const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': anthropicKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514',
+          max_tokens: 256,
+          temperature: 0.2,
+          messages: [{ role: 'user', content: prompt }],
+        }),
+      });
+
+      if (!response.ok) return { confidence: 0, reasoning: `Claude API ${response.status}` };
+
+      const data = await response.json();
+      const text = data.content?.map((b: any) => b.text || '').join('') || '';
+      const parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
+
+      const confidence = Math.max(0, Math.min(10000, parseInt(String(parsed.confidence)) || 0));
+      console.log(`Bot [${this.userId}]: AI confidence for ${symbol}: ${confidence} — ${parsed.reasoning}`);
+      return { confidence, reasoning: parsed.reasoning || 'no reasoning' };
+    } catch (err) {
+      console.error(`Bot [${this.userId}]: AI confidence scoring failed:`, err);
+      return { confidence: 0, reasoning: 'scoring error — fallback to deterministic' };
+    }
+  }
+
+  private async executeTrade(
+    symbol: string,
+    setup: StrategySetup,
+    aiScore: { confidence: number; reasoning: string } = { confidence: 0, reasoning: '' },
+  ) {
     const price      = setup.price!;
     const direction  = setup.direction!;
     const isSwapMode = ['swap', 'future'].includes(this.exchange.options['defaultType']);
@@ -488,6 +552,8 @@ export class SMCBot {
       bars_held:     0,
       opened_at:     new Date().toISOString(),
       user_id:       this.userId,
+      ai_confidence: aiScore.confidence,
+      ai_reasoning:  aiScore.reasoning,
     };
 
     const sb = getSupabase();
@@ -501,14 +567,16 @@ export class SMCBot {
       }
     }
 
+    const aiPct = aiScore.confidence > 0 ? `\nAI Score: ${(aiScore.confidence / 100).toFixed(1)}%` : '';
     const tag = isRealOrder ? '🔥 LIVE TRADE' : isPaper ? '🧪 PAPER TRADE' : '⚖️ PAPER TRADE (Live Data)';
     await this.notifyTelegram(
-      `✅ *${tag}*\n${symbol} ${direction.toUpperCase()}\nEntry: ${curPrice.toFixed(4)}\nSL: ${sl.toFixed(4)}\nTP: ${tp.toFixed(4)}`,
+      `✅ *${tag}*${aiPct}\n${symbol} ${direction.toUpperCase()}\nEntry: ${curPrice.toFixed(4)}\nSL: ${sl.toFixed(4)}\nTP: ${tp.toFixed(4)}`,
     );
 
     // Mantle on-chain log — fire-and-forget, never blocks trade execution (F-003)
     if (dbTradeId) {
       const entry = curPrice;
+      const aiConf = aiScore.confidence;
       fireAndForget(async () => {
         const txHash = await logDecisionOnChain({
           symbol,
@@ -518,6 +586,7 @@ export class SMCBot {
           tp,
           direction,
           tradeId: dbTradeId!,
+          aiConfidence: aiConf,
         });
         if (txHash) {
           const sb2 = getSupabase();
@@ -791,7 +860,9 @@ export class SMCBot {
                 : await dupQ;
 
               if (!existing || existing.length === 0) {
-                await this.executeTrade(symbol, setup);
+                // AI scores the setup — non-blocking, fallback to 0 on error (F-003)
+                const aiScore = await this.scoreAIConfidence(setup, symbol);
+                await this.executeTrade(symbol, setup, aiScore);
               } else {
                 const hasOpen = existing.some((t: any) => t.status === 'open');
                 await this.logStatus(hasOpen ? `MISSED SIGNAL (open exists) ${symbol}` : `COOLDOWN ${symbol}`, 'info');

@@ -1,0 +1,23 @@
+{
+  "language": "Solidity",
+  "sources": {
+    "AgentTradeRegistry.sol": {
+      "content": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.20;\n\n/// @title AgentTradeRegistry\n/// @notice On-chain registry for AI agent trade decisions — verifiable on Mantle Explorer.\n///         Stores structured trade records with AI confidence scores.\n///         Judges query: getDecision(0..N) for full agent trading history.\ncontract AgentTradeRegistry {\n    struct TradeDecision {\n        string symbol;       // e.g. \"BTC/USDT\"\n        string action;       // \"open\" or \"close\"\n        int256 entry;        // entry price × 1e8\n        int256 stopLoss;     // SL price × 1e8\n        int256 takeProfit;   // TP price × 1e8\n        string direction;    // \"long\" or \"short\"\n        uint256 aiConfidence; // basis points (0-10000), 0 = deterministic\n        uint256 timestamp;\n    }\n\n    TradeDecision[] public decisions;\n    address public agent;\n\n    event DecisionLogged(\n        uint256 indexed decisionId,\n        address indexed by,\n        string symbol,\n        string action,\n        string direction,\n        uint256 aiConfidence,\n        uint256 timestamp\n    );\n\n    constructor() {\n        agent = msg.sender;\n    }\n\n    function logDecision(\n        string calldata symbol,\n        string calldata action,\n        int256 entry,\n        int256 stopLoss,\n        int256 takeProfit,\n        string calldata direction,\n        uint256 aiConfidence\n    ) external returns (uint256) {\n        decisions.push();\n        TradeDecision storage d = decisions[decisions.length - 1];\n        d.symbol = symbol;\n        d.action = action;\n        d.entry = entry;\n        d.stopLoss = stopLoss;\n        d.takeProfit = takeProfit;\n        d.direction = direction;\n        d.aiConfidence = aiConfidence;\n        d.timestamp = block.timestamp;\n        uint256 id = decisions.length - 1;\n        emit DecisionLogged(id, msg.sender, symbol, action, direction, aiConfidence, block.timestamp);\n        return id;\n    }\n\n    function getDecisionCount() external view returns (uint256) {\n        return decisions.length;\n    }\n\n    function getDecision(uint256 id) external view returns (TradeDecision memory) {\n        require(id < decisions.length, \"Invalid decision ID\");\n        return decisions[id];\n    }\n\n    function getDecisionsPaginated(uint256 offset, uint256 limit)\n        external view\n        returns (TradeDecision[] memory batch, uint256 total)\n    {\n        total = decisions.length;\n        if (offset >= total) return (new TradeDecision[](0), total);\n        uint256 end = offset + limit;\n        if (end > total) end = total;\n        uint256 size = end - offset;\n        batch = new TradeDecision[](size);\n        for (uint256 i = 0; i < size; i++) {\n            batch[i] = decisions[offset + i];\n        }\n    }\n}\n"
+    }
+  },
+  "settings": {
+    "optimizer": {
+      "enabled": false
+    },
+    "outputSelection": {
+      "*": {
+        "*": [
+          "*"
+        ]
+      }
+    },
+    "metadata": {
+      "useLiteralContent": true
+    }
+  }
+}

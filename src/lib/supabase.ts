@@ -76,6 +76,8 @@ export type Trade = {
   is_on_chain?: boolean;
   mantle_block?: number | null;
   mantle_logged_at?: string | null;
+  ai_confidence?: number;
+  ai_reasoning?: string;
 };
 
 export type Signal = {

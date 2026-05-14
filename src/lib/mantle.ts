@@ -54,6 +54,7 @@ export interface Decision {
   tp: number;
   direction: 'long' | 'short';
   tradeId: string;
+  aiConfidence?: number; // 0-10000, 0 = deterministic SMC, >0 = AI-scored
 }
 
 export interface NFTMetadata {
@@ -184,7 +185,7 @@ export async function logDecisionOnChain(decision: Decision): Promise<string | n
         Math.round(decision.sl * 1e8),
         Math.round(decision.tp * 1e8),
         decision.direction,
-        0, // aiConfidence — 0 = deterministic SMC, >0 when AI drives strategy
+        decision.aiConfidence ?? 0, // 0 = deterministic SMC, >0 = AI-scored
         { gasLimit: 300000n },
       );
       const receipt = await tx.wait();
