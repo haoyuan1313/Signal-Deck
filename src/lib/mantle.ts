@@ -463,14 +463,46 @@ export async function getOnChainPerformance(): Promise<OnChainPerformance | null
       if (d.aiConfidence > 0) { ss.aiSum += d.aiConfidence; ss.aiCount++; totalAISum += d.aiConfidence; totalAICount++; }
     }
 
-    // Note: true win/loss requires exit_price, which isn't stored on-chain.
-    // The contract stores open entry price on both open AND close decisions.
-    // Win rate is null when we can't calculate it from on-chain data alone.
-    // See Supabase trades table for actual win/loss with R-multiple.
+    // Cross-reference Supabase for win/loss data (contract doesn't store exit_price)
+    let supabaseWinRates: { overall: number | null; bySymbol: Record<string, number | null>; byDirection: { long: number | null; short: number | null } } = {
+      overall: null, bySymbol: {}, byDirection: { long: null, short: null },
+    };
+    try {
+      const sbUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '';
+      const sbKey = process.env.SUPABASE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+      if (sbUrl && sbKey) {
+        // Query closed trades from Supabase for win/loss
+        const baseUrl = sbUrl.replace(/\/+$/, '') + '/rest/v1/trades';
+        const closedRes = await fetch(`${baseUrl}?select=symbol,direction,outcome&status=eq.closed&outcome=not.is.null&limit=1000`, {
+          headers: { 'apikey': sbKey, 'Authorization': 'Bearer ' + sbKey },
+        });
+        if (closedRes.ok) {
+          const closedTrades: Array<{ symbol: string; direction: string; outcome: number }> = await closedRes.json();
+
+          // Overall win rate
+          const wins = closedTrades.filter(t => t.outcome === 1).length;
+          supabaseWinRates.overall = closedTrades.length > 0 ? Math.round((wins / closedTrades.length) * 100) : null;
+
+          // By symbol
+          for (const sym of Object.keys(symStats)) {
+            const symTrades = closedTrades.filter(t => t.symbol === sym);
+            const symWins = symTrades.filter(t => t.outcome === 1).length;
+            supabaseWinRates.bySymbol[sym] = symTrades.length > 0 ? Math.round((symWins / symTrades.length) * 100) : null;
+          }
+
+          // By direction
+          for (const dir of ['long', 'short'] as const) {
+            const dirTrades = closedTrades.filter(t => t.direction === dir);
+            const dirWins = dirTrades.filter(t => t.outcome === 1).length;
+            supabaseWinRates.byDirection[dir] = dirTrades.length > 0 ? Math.round((dirWins / dirTrades.length) * 100) : null;
+          }
+        }
+      }
+    } catch { /* Supabase cross-reference is best-effort */ }
 
     const overall = {
       totalDecisions: decisions.length,
-      winRate: null as number | null, // requires exit_price — use Supabase
+      winRate: supabaseWinRates.overall,
       avgAIConfidence: totalAICount > 0 ? Math.round(totalAISum / totalAICount) : 0,
     };
 
@@ -478,14 +510,14 @@ export async function getOnChainPerformance(): Promise<OnChainPerformance | null
     for (const [sym, ss] of Object.entries(symStats)) {
       bySymbol[sym] = {
         decisions: ss.opens + ss.closes,
-        winRate: null, // requires exit_price
+        winRate: supabaseWinRates.bySymbol[sym] ?? null,
         avgAIConfidence: ss.aiCount > 0 ? Math.round(ss.aiSum / ss.aiCount) : 0,
       };
     }
 
     const byDirection = {
-      long: { decisions: dirStats.long.opens + dirStats.long.closes, winRate: null as number | null },
-      short: { decisions: dirStats.short.opens + dirStats.short.closes, winRate: null as number | null },
+      long: { decisions: dirStats.long.opens + dirStats.long.closes, winRate: supabaseWinRates.byDirection.long },
+      short: { decisions: dirStats.short.opens + dirStats.short.closes, winRate: supabaseWinRates.byDirection.short },
     };
 
     const result: OnChainPerformance = { overall, bySymbol, byDirection };
