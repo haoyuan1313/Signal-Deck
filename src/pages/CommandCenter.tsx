@@ -48,11 +48,23 @@ export default function CommandCenter() {
   const { trades, signals, logs, botLive, lastHeartbeat, prices, loading, fetchLogs, fetchInitialData, backendError, settings } = useStore();
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<'all' | 'live' | 'paper'>('all');
+  const [mantlePerf, setMantlePerf] = useState<any>(null);
+
+  const fetchMantlePerformance = async () => {
+    try {
+      const res = await fetch('/api/mantle/performance');
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.available) setMantlePerf(data);
+    } catch { /* silent */ }
+  };
 
   useEffect(() => {
     const logInterval = setInterval(fetchLogs, 5000);
     const dataInterval = setInterval(() => fetchInitialData(true), 30000);
-    return () => { clearInterval(logInterval); clearInterval(dataInterval); };
+    fetchMantlePerformance();
+    const mantleInterval = setInterval(fetchMantlePerformance, 5 * 60 * 1000);
+    return () => { clearInterval(logInterval); clearInterval(dataInterval); clearInterval(mantleInterval); };
   }, [fetchLogs, fetchInitialData]);
 
   const filteredTrades = useMemo(() => trades.filter(t => {
@@ -458,14 +470,20 @@ export default function CommandCenter() {
       >
         <div className="flex items-center gap-3">
           <div className="p-2 bg-violet-500/20 rounded-lg">
-            <Bot className="text-violet-400" size={18} />
+            <Brain size={18} className="text-violet-400" />
           </div>
           <div>
-            <span className="text-violet-400 text-sm font-bold tracking-tight">Mantle Agent Status</span>
-            <div className="flex items-center gap-3 mt-1">
-              <span className="text-[10px] text-violet-500 font-mono">NFT ID: —</span>
-              <span className="text-[10px] text-violet-500 font-mono">On-chain PnL: —</span>
-              <span className="text-[10px] text-violet-500 font-mono">Last tx: —</span>
+            <span className="text-violet-400 text-sm font-bold tracking-tight">On-Chain Intelligence</span>
+            <div className="text-[10px] text-violet-500 font-mono mt-0.5">
+              {mantlePerf ? [
+                `${mantlePerf.overall.totalDecisions} on-chain decisions`,
+                mantlePerf.overall.avgAIConfidence > 0 ? `· Avg AI: ${(mantlePerf.overall.avgAIConfidence / 100).toFixed(1)}%` : '',
+                Object.keys(mantlePerf.bySymbol || {}).length > 0
+                  ? `· ${Object.keys(mantlePerf.bySymbol).length} symbols`
+                  : '',
+              ].filter(Boolean).join(' ') : (
+                'Accumulating on-chain data...'
+              )}
             </div>
           </div>
         </div>

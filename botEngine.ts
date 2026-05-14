@@ -3,7 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
 import { detectSMCSetup, OHLCV, StrategySetup, calcATR, calcEMA, getHTFTrend, SMCOptions, DEFAULT_ALLOWED_SESSIONS } from './src/lib/strategy';
 import { MAX_OPEN_POSITIONS, DAILY_LOSS_HALT_PCT } from './src/lib/constants';
-import { logDecisionOnChain, fireAndForget, processRetryQueue } from './src/lib/mantle';
+import { logDecisionOnChain, fireAndForget, processRetryQueue, getOnChainPerformance } from './src/lib/mantle';
 
 dotenv.config();
 
@@ -384,7 +384,25 @@ export class SMCBot {
       const anthropicKey = process.env.ANTHROPIC_API_KEY;
       if (!anthropicKey) return { confidence: 0, reasoning: 'ANTHROPIC_API_KEY not set' };
 
-      const prompt = `You are an SMC (Smart Money Concepts) trade evaluator. Score the following trade setup on a scale of 0-10000 (basis points).
+      // Fetch on-chain performance data — non-blocking, fallback to empty (F-003)
+      let onChainContext = '';
+      try {
+        const perf = await getOnChainPerformance();
+        if (perf) {
+          const symPerf = perf.bySymbol[symbol];
+          const dirKey = setup.direction || 'long';
+          const dirPerf = perf.byDirection[dirKey as 'long' | 'short'];
+          onChainContext = `
+On-chain historical performance from Mantle AgentTradeRegistry (${perf.overall.totalDecisions} decisions recorded):
+- Overall avg AI confidence: ${perf.overall.avgAIConfidence} bps${symPerf ? `
+- ${symbol} on-chain: ${symPerf.decisions} decisions, avg AI confidence ${symPerf.avgAIConfidence} bps` : ''}${dirPerf ? `
+- ${dirKey} direction on-chain: ${dirPerf.decisions} decisions` : ''}
+
+Use this on-chain data to calibrate your confidence score — higher confidence when the setup aligns with historical patterns.`;
+        }
+      } catch { /* F-003: on-chain data fetch failure doesn't block scoring */ }
+
+      const prompt = `You are an SMC (Smart Money Concepts) trade evaluator. Score the following trade setup on a scale of 0-10000 (basis points).${onChainContext}
 
 Setup details:
 - Symbol: ${symbol}
@@ -400,7 +418,8 @@ Score based on:
 1. HTF trend alignment (higher = stronger trend)
 2. Risk/reward quality (higher RR = better)
 3. Session quality (London/NY > Asian/Late)
-4. Overall setup cleanliness
+4. On-chain historical patterns for this symbol and direction
+5. Overall setup cleanliness
 
 Return ONLY valid JSON — no markdown, no explanation outside JSON:
 {"confidence": <0-10000>, "reasoning": "<one sentence>"}`;

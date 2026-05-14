@@ -851,6 +851,21 @@ async function startServer() {
     }
   });
 
+  // GET /api/mantle/performance — on-chain trade performance metrics
+  app.get('/api/mantle/performance', requireAuth, async (req, res) => {
+    try {
+      const { getOnChainPerformance } = await import('./src/lib/mantle');
+      const perf = await getOnChainPerformance();
+      if (!perf) {
+        return res.json({ available: false });
+      }
+      res.json({ available: true, ...perf });
+    } catch (err: any) {
+      console.error('[mantle:performance]', err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.get("/api/prices", async (req, res) => {
     try {
       const symbolsStr = req.query.symbols as string;

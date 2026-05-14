@@ -393,6 +393,108 @@ export async function getAgentOnChainHistory(
   }
 }
 
+// ─── On-Chain Performance ──────────────────────────────────────────────────
+// Reads decisions from the contract to calculate per-symbol, per-direction
+// metrics. Complements on-chain data with Supabase for win/loss (contract
+// doesn't store exit_price). Cached for 5 min to avoid RPC spam on bot loop.
+
+interface PerformanceCache {
+  data: OnChainPerformance;
+  timestamp: number;
+}
+
+let performanceCache: PerformanceCache | null = null;
+const CACHE_TTL_MS = 5 * 60 * 1000;
+
+export interface OnChainPerformance {
+  overall: { totalDecisions: number; winRate: number | null; avgAIConfidence: number };
+  bySymbol: Record<string, { decisions: number; winRate: number | null; avgAIConfidence: number }>;
+  byDirection: { long: { decisions: number; winRate: number | null }; short: { decisions: number; winRate: number | null } };
+}
+
+export async function getOnChainPerformance(): Promise<OnChainPerformance | null> {
+  // Return cached data if fresh
+  if (performanceCache && Date.now() - performanceCache.timestamp < CACHE_TTL_MS) {
+    return performanceCache.data;
+  }
+
+  try {
+    const registry = getRegistryContract();
+    if (!registry) return null;
+
+    // Fetch decisions in batches of 50 from the contract
+    const total: bigint = await registry.getDecisionCount();
+    if (total === 0n) return null;
+
+    const decisions: Array<{
+      symbol: string; action: 'open' | 'close'; entry: number; direction: 'long' | 'short';
+      aiConfidence: number; tradeId?: string;
+    }> = [];
+
+    const limit = 50n;
+    for (let offset = 0n; offset < total; offset += limit) {
+      const [batch] = await registry.getDecisionsPaginated(offset, limit);
+      for (const d of batch) {
+        decisions.push({
+          symbol: d.symbol,
+          action: d.action === 'open' ? 'open' : 'close',
+          entry: Number(d.entry) / 1e8,
+          direction: d.direction === 'long' ? 'long' : 'short',
+          aiConfidence: Number(d.aiConfidence),
+        });
+      }
+    }
+
+    // Calculate per-symbol + per-direction aggregates from contract data
+    const symStats: Record<string, { opens: number; closes: number; aiSum: number; aiCount: number; longs: number; shorts: number }> = {};
+    const dirStats = { long: { opens: 0, closes: 0 }, short: { opens: 0, closes: 0 } };
+    let totalAISum = 0;
+    let totalAICount = 0;
+
+    for (const d of decisions) {
+      if (!symStats[d.symbol]) symStats[d.symbol] = { opens: 0, closes: 0, aiSum: 0, aiCount: 0, longs: 0, shorts: 0 };
+      const ss = symStats[d.symbol];
+      if (d.action === 'open') { ss.opens++; dirStats[d.direction].opens++; }
+      else { ss.closes++; dirStats[d.direction].closes++; }
+      if (d.direction === 'long') ss.longs++;
+      else ss.shorts++;
+      if (d.aiConfidence > 0) { ss.aiSum += d.aiConfidence; ss.aiCount++; totalAISum += d.aiConfidence; totalAICount++; }
+    }
+
+    // Note: true win/loss requires exit_price, which isn't stored on-chain.
+    // The contract stores open entry price on both open AND close decisions.
+    // Win rate is null when we can't calculate it from on-chain data alone.
+    // See Supabase trades table for actual win/loss with R-multiple.
+
+    const overall = {
+      totalDecisions: decisions.length,
+      winRate: null as number | null, // requires exit_price — use Supabase
+      avgAIConfidence: totalAICount > 0 ? Math.round(totalAISum / totalAICount) : 0,
+    };
+
+    const bySymbol: Record<string, { decisions: number; winRate: number | null; avgAIConfidence: number }> = {};
+    for (const [sym, ss] of Object.entries(symStats)) {
+      bySymbol[sym] = {
+        decisions: ss.opens + ss.closes,
+        winRate: null, // requires exit_price
+        avgAIConfidence: ss.aiCount > 0 ? Math.round(ss.aiSum / ss.aiCount) : 0,
+      };
+    }
+
+    const byDirection = {
+      long: { decisions: dirStats.long.opens + dirStats.long.closes, winRate: null as number | null },
+      short: { decisions: dirStats.short.opens + dirStats.short.closes, winRate: null as number | null },
+    };
+
+    const result: OnChainPerformance = { overall, bySymbol, byDirection };
+    performanceCache = { data: result, timestamp: Date.now() };
+    return result;
+  } catch (err) {
+    console.error('[Mantle] getOnChainPerformance failed:', err);
+    return null;
+  }
+}
+
 // ─── Utility ────────────────────────────────────────────────────────────────
 
 export function getMantleWalletInfo() {
