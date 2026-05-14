@@ -148,7 +148,23 @@ function decodeDecision(hexData: string): Decision | null {
   }
 }
 
+// ─── Contract ABI (minimal — just logDecision + events) ─────────────────────
+
+const REGISTRY_ABI = [
+  'function logDecision(string,string,int256,int256,int256,string,uint256) external returns (uint256)',
+  'function getDecisionCount() external view returns (uint256)',
+  'function agent() external view returns (address)',
+];
+
+function getRegistryContract(): ethers.Contract | null {
+  const addr = process.env.AGENT_TRADE_REGISTRY_ADDRESS;
+  if (!addr || !wallet) return null;
+  return new ethers.Contract(addr, REGISTRY_ABI, wallet);
+}
+
 // ─── Core: Log Decision On-Chain ────────────────────────────────────────────
+// Uses the deployed AgentTradeRegistry contract if configured.
+// Falls back to self-call calldata if no contract address set.
 
 export async function logDecisionOnChain(decision: Decision): Promise<string | null> {
   if (!wallet || !provider) {
@@ -156,6 +172,35 @@ export async function logDecisionOnChain(decision: Decision): Promise<string | n
     return null;
   }
 
+  const registry = getRegistryContract();
+
+  if (registry) {
+    // PREFERRED: call deployed contract — structured, verifiable, judge-ready
+    try {
+      const tx = await registry.logDecision(
+        decision.symbol,
+        decision.action,
+        Math.round(decision.entry * 1e8),
+        Math.round(decision.sl * 1e8),
+        Math.round(decision.tp * 1e8),
+        decision.direction,
+        0, // aiConfidence — 0 = deterministic SMC, >0 when AI drives strategy
+        { gasLimit: 300000n },
+      );
+      const receipt = await tx.wait();
+      if (!receipt) throw new Error('Transaction receipt is null');
+      console.log(
+        `[Mantle] Decision logged via contract — tx: ${receipt.hash} — ${decision.action} ${decision.symbol} ${decision.direction}`,
+      );
+      return receipt.hash;
+    } catch (err) {
+      console.error('[Mantle] logDecisionOnChain (contract) failed:', err);
+      retryQueue.push({ decision, attempts: 0, lastAttempt: Date.now() });
+      return null;
+    }
+  }
+
+  // FALLBACK: self-call with ABI-encoded calldata — works without contract
   try {
     const calldata = encodeDecision(decision);
     const tx = await wallet.sendTransaction({
@@ -167,11 +212,11 @@ export async function logDecisionOnChain(decision: Decision): Promise<string | n
 
     const receipt = await tx.wait();
     console.log(
-      `[Mantle] Decision logged — tx: ${receipt.hash} — ${decision.action} ${decision.symbol} ${decision.direction}`,
+      `[Mantle] Decision logged (self-call) — tx: ${receipt.hash} — ${decision.action} ${decision.symbol} ${decision.direction}`,
     );
     return receipt.hash;
   } catch (err) {
-    console.error('[Mantle] logDecisionOnChain failed:', err);
+    console.error('[Mantle] logDecisionOnChain (self-call) failed:', err);
     retryQueue.push({ decision, attempts: 0, lastAttempt: Date.now() });
     return null;
   }

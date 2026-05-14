@@ -21,3 +21,6 @@ export const MANTLE_EXPLORER = 'https://explorer.mantle.xyz';
 
 /** ERC-8004 agent identity NFT contract — TBD, fill in official address */
 export const ERC8004_ADDRESS = 'TBD';
+
+/** AgentTradeRegistry — deployed on Mantle mainnet, verifiable on explorer */
+export const AGENT_TRADE_REGISTRY_ADDRESS = process.env.AGENT_TRADE_REGISTRY_ADDRESS || '';
