@@ -2,6 +2,7 @@
 // ethers.js v6 — BigInt, not BigNumber. All Mantle writes are non-blocking.
 
 import { ethers } from 'ethers';
+import { ERC8004_IDENTITY_REGISTRY } from './constants.ts';
 
 // ─── Network Config ─────────────────────────────────────────────────────────
 
@@ -293,12 +294,11 @@ export async function mintAgentNFT(metadata: NFTMetadata): Promise<{ tokenId: st
   const contractAddress =
     process.env.ERC8004_IDENTITY_REGISTRY ||
     process.env.ERC8004_CONTRACT_ADDRESS ||
-    process.env.VITE_ERC8004_CONTRACT_ADDRESS;
+    process.env.VITE_ERC8004_CONTRACT_ADDRESS ||
+    ERC8004_IDENTITY_REGISTRY; // hardcoded fallback — official Mantle hackathon contract
 
-  if (!contractAddress || contractAddress === 'TBD') {
-    throw new Error(
-      'ERC-8004 contract address not configured. Set ERC8004_IDENTITY_REGISTRY in environment.',
-    );
+  if (!contractAddress) {
+    throw new Error('ERC-8004 contract address not configured.');
   }
 
   if (!wallet || !provider) {
@@ -315,14 +315,22 @@ export async function mintAgentNFT(metadata: NFTMetadata): Promise<{ tokenId: st
   );
   const receipt = await tx.wait();
 
-  // tokenId is in the first log's first topic (Transfer event)
+  // ERC-8004 uses custom events — tokenId from on-chain state
   let tokenId = 'unknown';
   if (receipt.logs.length > 0) {
     const log = receipt.logs[0];
-    // ERC-721 Transfer event: topic0 = keccak("Transfer(address,address,uint256)")
-    // topic3 is the tokenId for standard ERC-721
     if (log.topics.length >= 4) {
       tokenId = BigInt(log.topics[3]).toString();
+    }
+  }
+  // Fallback: query balanceOf to confirm mint succeeded
+  if (tokenId === 'unknown') {
+    try {
+      const count = await contract.balanceOf(wallet.address);
+      tokenId = count > 0n ? `minted (balance: ${count})` : 'unknown';
+    } catch {
+      // ERC-8004 may not implement balanceOf — tx success is proof enough
+      tokenId = `tx:${receipt.hash.slice(0, 10)}`;
     }
   }
 

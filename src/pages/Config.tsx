@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { cn, formatCurrency } from '../lib/utils';
 import { testSupabaseConnection, supabase } from '../lib/supabase';
 import PasswordGuard from '../components/PasswordGuard';
-import { MANTLE_CHAIN_ID, MANTLE_EXPLORER } from '../lib/constants';
+import { MANTLE_CHAIN_ID, MANTLE_EXPLORER, ERC8004_IDENTITY_REGISTRY } from '../lib/constants';
 
 type ConfigTab = 'bot' | 'mantle' | 'database';
 
@@ -33,10 +33,13 @@ export default function Config() {
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'success'>('idle');
 
   // Mantle form
-  const [mantleAddress, setMantleAddress] = useState('');
-  const [mantleApiKey, setMantleApiKey] = useState('');
+  const [mantlePrivateKey, setMantlePrivateKey] = useState('');
   const [mantleStatus, setMantleStatus] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected');
   const [mantleError, setMantleError] = useState<string | null>(null);
+  const [mantleWallet, setMantleWallet] = useState<{ address: string; network: string; chainId: number; isTestnet: boolean } | null>(null);
+  const [nftStatus, setNftStatus] = useState<{ minted: boolean; tokenId?: string; txHash?: string } | null>(null);
+  const [retryPending, setRetryPending] = useState(0);
+  const [mintLoading, setMintLoading] = useState(false);
 
   // Database
   const [trades, setTrades] = useState<any[]>([]);
@@ -164,13 +167,51 @@ export default function Config() {
     } catch (err: any) { setBbStatus({ loading: false, result: { success: false, error: err.message } }); }
   };
 
+  const fetchMantleStatus = async () => {
+    try {
+      const res = await fetch('/api/mantle/status');
+      if (!res.ok) return;
+      const d = await res.json();
+      if (d.wallet?.connected) { setMantleStatus('connected'); setMantleWallet(d.wallet); }
+      else { setMantleStatus('disconnected'); setMantleWallet(null); }
+      setNftStatus(d.nft || null);
+      setRetryPending(d.retryQueue?.pending || 0);
+    } catch {}
+  };
+
+  useEffect(() => { fetchMantleStatus(); }, []);
+
+  const handleConnectMantle = async () => {
+    if (!mantlePrivateKey.trim() || mantlePrivateKey.trim().length < 64) {
+      setMantleError('Private key must be 64+ hex characters.'); return;
+    }
+    setMantleStatus('connecting'); setMantleError(null);
+    try {
+      const res = await fetch('/api/mantle/connect', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ privateKey: mantlePrivateKey.trim() }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error || 'Connect failed');
+      setMantlePrivateKey('');
+      fetchMantleStatus();
+    } catch (err: any) {
+      setMantleStatus('disconnected'); setMantleError(err.message);
+    }
+  };
+
   const handleMintNFT = async () => {
-    setMantleStatus('connecting');
-    setMantleError(null);
-    // Stub — real implementation will call ERC-8004 contract
-    setTimeout(() => {
-      setMantleStatus('connected');
-    }, 1500);
+    setMintLoading(true); setMantleError(null);
+    try {
+      const res = await fetch('/api/mantle/mint-nft', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'SignalDeck Agent', strategy: 'SMC FVG + HTF Trend', metadataURI: 'https://signaldeck-beta.vercel.app/api/agent/metadata' }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error || 'Mint failed');
+      fetchMantleStatus();
+    } catch (err: any) { setMantleError(err.message); }
+    finally { setMintLoading(false); }
   };
 
   const fetchTrades = async () => {
@@ -460,20 +501,31 @@ export default function Config() {
                     </div>
                   </div>
 
-                  <div className="space-y-4">
+                  {mantleWallet ? (
+                    <div className="bg-zinc-800/50 rounded-xl p-4 space-y-2">
+                      <div className="flex justify-between text-sm">
+                        <span className="text-zinc-500">Address</span>
+                        <span className="font-mono text-white text-xs truncate max-w-[260px]">{mantleWallet.address}</span>
+                      </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-zinc-500">Network</span>
+                        <span className="text-white">{mantleWallet.network}</span>
+                      </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-zinc-500">Chain ID</span>
+                        <span className="text-white font-mono">{mantleWallet.chainId}</span>
+                      </div>
+                    </div>
+                  ) : (
                     <div className="space-y-1.5">
-                      <label className="text-xs font-bold text-zinc-500 uppercase tracking-wider">Mantle Wallet Address</label>
-                      <input type="text" value={mantleAddress} onChange={e => setMantleAddress(e.target.value)}
+                      <label className="text-xs font-bold text-zinc-500 uppercase tracking-wider">Mantle Private Key</label>
+                      <input type="password" value={mantlePrivateKey} onChange={e => setMantlePrivateKey(e.target.value)}
                         placeholder="0x..." className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-violet-500/50 transition-all" />
+                      <p className="text-[10px] text-zinc-600">Private key never leaves your server. Stored in process memory only.</p>
                     </div>
-                    <div className="space-y-1.5">
-                      <label className="text-xs font-bold text-zinc-500 uppercase tracking-wider">RealClaw API Key</label>
-                      <input type="password" value={mantleApiKey} onChange={e => setMantleApiKey(e.target.value)}
-                        placeholder="sk-..." className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-violet-500/50 transition-all" />
-                    </div>
-                  </div>
+                  )}
 
-                  <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-4 flex-wrap">
                     <div className={cn(
                       "flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold",
                       mantleStatus === 'connected' ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" :
@@ -483,10 +535,22 @@ export default function Config() {
                       <div className={cn("w-2 h-2 rounded-full", mantleStatus === 'connected' ? "bg-emerald-500" : mantleStatus === 'connecting' ? "bg-amber-500 animate-pulse" : "bg-zinc-600")} />
                       {mantleStatus === 'connected' ? 'Connected' : mantleStatus === 'connecting' ? 'Connecting...' : 'Disconnected'}
                     </div>
-                    <button onClick={handleMintNFT} disabled={!mantleAddress || mantleStatus === 'connecting'}
-                      className="flex items-center gap-2 px-6 py-2.5 bg-violet-500 hover:bg-violet-400 disabled:bg-zinc-800 disabled:text-zinc-600 text-white rounded-xl font-bold text-sm transition-all">
-                      <Bot size={16} />Mint Agent NFT
-                    </button>
+                    {!mantleWallet ? (
+                      <button onClick={handleConnectMantle} disabled={mantleStatus === 'connecting'}
+                        className="flex items-center gap-2 px-6 py-2.5 bg-violet-500 hover:bg-violet-400 disabled:bg-zinc-800 disabled:text-zinc-600 text-white rounded-xl font-bold text-sm transition-all">
+                        <Wallet size={16} />Connect
+                      </button>
+                    ) : (
+                      <button onClick={handleMintNFT} disabled={mintLoading || mantleStatus === 'connecting' || nftStatus?.minted}
+                        className="flex items-center gap-2 px-6 py-2.5 bg-violet-500 hover:bg-violet-400 disabled:bg-zinc-800 disabled:text-zinc-600 text-white rounded-xl font-bold text-sm transition-all">
+                        <Bot size={16} />{mintLoading ? 'Minting...' : nftStatus?.minted ? 'NFT Minted' : 'Mint Agent NFT'}
+                      </button>
+                    )}
+                    {retryPending > 0 && (
+                      <span className="text-[10px] font-bold text-amber-400 bg-amber-500/10 px-2 py-1 rounded">
+                        {retryPending} retry pending
+                      </span>
+                    )}
                   </div>
                   {mantleError && <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl text-xs text-rose-400">{mantleError}</div>}
                 </div>
@@ -499,7 +563,7 @@ export default function Config() {
                   <div className="grid grid-cols-2 gap-4 text-sm">
                     <div className="p-3 bg-zinc-800/50 rounded-xl">
                       <span className="text-zinc-500 text-xs">Contract</span>
-                      <div className="font-mono text-zinc-300 text-xs mt-1">TBD — official ERC-8004 address</div>
+                      <div className="font-mono text-zinc-300 text-xs mt-1 truncate">{ERC8004_IDENTITY_REGISTRY}</div>
                     </div>
                     <div className="p-3 bg-zinc-800/50 rounded-xl">
                       <span className="text-zinc-500 text-xs">Network</span>

@@ -20,9 +20,9 @@ export const MANTLE_RPC = 'https://rpc.mantle.xyz';
 export const MANTLE_EXPLORER = 'https://explorer.mantle.xyz';
 
 /** ERC-8004 agent identity NFT — official Mantle hackathon contract */
-export const ERC8004_IDENTITY_REGISTRY = process.env.ERC8004_IDENTITY_REGISTRY || '';
+export const ERC8004_IDENTITY_REGISTRY = process.env.ERC8004_IDENTITY_REGISTRY || '0x8004A818BFB912233c491871b3d84c89A494BD9e';
 /** ERC-8004 agent reputation registry */
-export const ERC8004_REPUTATION_REGISTRY = process.env.ERC8004_REPUTATION_REGISTRY || '';
+export const ERC8004_REPUTATION_REGISTRY = process.env.ERC8004_REPUTATION_REGISTRY || '0x8004B663056A597Dffe9eCcC1965A193B7388713';
 /** @deprecated — use ERC8004_IDENTITY_REGISTRY */
 export const ERC8004_ADDRESS = ERC8004_IDENTITY_REGISTRY;
 
