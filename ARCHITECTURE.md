@@ -9,7 +9,14 @@ SignalDeck is an SMC (Smart Money Concepts) crypto trading bot dashboard targeti
 **Database:** Supabase (PostgreSQL)  
 **Exchange:** Bybit (spot + perpetual swaps)  
 **Blockchain:** Mantle Network (chain ID 5000)  
-**Smart Contract:** AgentTradeRegistry — `0x0c26e1f25735798CB94E2CC1851adeBfA0276142` on Mantle Mainnet
+
+**Deployed Contracts (Mantle Mainnet):**
+
+| Contract | Address | Purpose |
+|----------|---------|---------|
+| AgentTradeRegistry | `0x0c26e1f25735798CB94E2CC1851adeBfA0276142` | On-chain trade decision log with AI confidence scores |
+| ERC-8004 Identity Registry | `0x8004A818BFB912233c491871b3d84c89A494BD9e` | Agent identity NFT minting (official hackathon contract) |
+| ERC-8004 Reputation Registry | `0x8004B663056A597Dffe9eCcC1965A193B7388713` | Agent reputation tracking (official hackathon contract) |
 
 ---
 
@@ -48,25 +55,31 @@ SignalDeck is an SMC (Smart Money Concepts) crypto trading bot dashboard targeti
              │
       ┌──────┴──────┐
       ▼             ▼
-┌──────────────┐ ┌──────────────────────────────────────┐
-│   SUPABASE   │ │          MANTLE NETWORK               │
-│   (Data)     │ │  AgentTradeRegistry                   │
-│              │ │  0x0c26e1f25735798CB94E2CC1851adeBf   │
-│  Tables:     │ │   A0276142 (Mainnet)                  │
-│  ├─ trades   │ │                                      │
-│  │  (mantle_ │ │  logDecision(symbol, action, entry,   │
-│  │  tx_hash, │ │    sl, tp, direction, aiConfidence)   │
-│  │  is_on_   │ │  → emits DecisionLogged event         │
-│  │  chain,   │ │  → returns decisionId                 │
-│  │  ai_confi-│ │                                      │
-│  │  dence,   │ │  getDecision(0..N) — judge queryable  │
-│  │  ai_reas- │ │  getDecisionCount()                   │
-│  │  oning)   │ │                                      │
-│  ├─ agent_   │ │  ERC-8004 NFT (pending)               │
-│  │  identity │ │                                      │
-│  └─ mantle_  │ └──────────────────────────────────────┘
-│     config   │
-└──────────────┘
+┌──────────────┐ ┌──────────────────────────────────────────┐
+│   SUPABASE   │ │            MANTLE NETWORK                 │
+│   (Data)     │ │                                          │
+│              │ │  AgentTradeRegistry                      │
+│  Tables:     │ │  0x0c26e1f25735798CB94E2CC1851adeBf      │
+│  ├─ trades   │ │   A0276142 (Mainnet, partial verify)     │
+│  │  mantle_  │ │                                          │
+│  │  tx_hash  │ │  logDecision(symbol, action, entry, sl,  │
+│  │  is_on_   │ │    tp, direction, aiConfidence)          │
+│  │  chain    │ │  → emits DecisionLogged event             │
+│  │  ai_conf  │ │  → returns decisionId                    │
+│  │  ai_reas  │ │                                          │
+│  ├─ agent_   │ │  getDecision(0..N) — judge-queryable     │
+│  │  identity │ │  getDecisionCount()                      │
+│  └─ mantle_  │ │  getDecisionsPaginated(offset, limit)    │
+│     config   │ │                                          │
+│              │ │  ERC-8004 Identity                       │
+└──────────────┘ │  0x8004A818BFB912233c491871b3d84c89      │
+                 │  A494BD9e (Mainnet)                       │
+                 │  mint(to, name, strategy, metadataURI)    │
+                 │                                          │
+                 │  ERC-8004 Reputation                      │
+                 │  0x8004B663056A597Dffe9eCcC1965A193      │
+                 │  B7388713 (Mainnet)                       │
+                 └──────────────────────────────────────────┘
              │
              ▼
 ┌──────────────────────────────────────────────────────────┐
@@ -85,10 +98,10 @@ SignalDeck is an SMC (Smart Money Concepts) crypto trading bot dashboard targeti
 | Route | Page | Purpose |
 |-------|------|---------|
 | `/` | `CommandCenter` | KPI bar, equity curve, open positions, bot console, signal feed, Mantle status bar |
-| `/agent` | `AgentIdentity` | ERC-8004 NFT card, on-chain decision log, cumulative stats, Demo Day fullscreen mode |
+| `/agent` | `AgentIdentity` | Wallet info, ERC-8004 NFT card (mint/view), on-chain decision log table, cumulative stats (decisions, AI score, volume), retry queue status, Demo Day fullscreen mode |
 | `/lab` | `StrategyLab` | Tab 1: Backtester, Tab 2: AXIOM AI Analyst, Tab 3: Signal diagnostics + protocol selector |
-| `/trades` | `TradeHistory` | Full trade table with filters, on-chain tx hash column, slide-over detail panel |
-| `/settings` | `Config` | Tab 1: Bot Config, Tab 2: Mantle Connection, Tab 3: Database manager |
+| `/trades` | `TradeHistory` | Full trade table with filters, on-chain tx hash column, AI score column, slide-over detail panel |
+| `/settings` | `Config` | Tab 1: Bot Config, Tab 2: Mantle Connection (connect wallet, mint NFT, status), Tab 3: Database manager |
 
 ### State Management (Zustand)
 
@@ -106,8 +119,9 @@ SignalDeck is an SMC (Smart Money Concepts) crypto trading bot dashboard targeti
 1. User loads page → AuthGate checks /api/auth/me
 2. useStore.fetchInitialData() → Supabase queries (settings, trades, signals, logs)
 3. useRealtime hook → polling /api/prices every 3s for live prices
-4. Bot console auto-refreshes every 5s
-5. User actions (save settings, pause bot) → PUT/POST to Supabase via API
+4. AgentIdentity page → polling /api/mantle/status + /api/mantle/history every 30s
+5. Bot console auto-refreshes every 5s
+6. User actions (save settings, pause bot, mint NFT) → PUT/POST to Supabase or API
 ```
 
 ---
@@ -179,6 +193,7 @@ User API Keys:
 - **Public fallback:** If user's API key is invalid (10003/10004), prices and candles fall back to the server's public exchange instance.
 - **Screener lock:** Global mutex (`SCREENER_LOCK`) prevents concurrent screener runs.
 - **Mantle wallet:** Connected via POST /api/mantle/connect. Private key held only in ethers.Wallet memory — never logged, never stored in Supabase. Auto-connects on startup if MANTLE_PRIVATE_KEY env var is set.
+- **Auth middleware:** `requireAuth` validates bearer token against `system_users.session_token` before any Mantle route executes.
 
 ---
 
@@ -202,10 +217,13 @@ User API Keys:
 │  5. AI scoring    │  ← scoreAIConfidence(): Claude evaluates setup → 0-10000
 │  6. Calculate size│  (risk_percent × equity / stop distance)
 │  7. executeTrade  │  → open position (paper or live via ccxt)
+│                      → inserts trade to Supabase with ai_confidence
 │  8. Mantle log    │  → fireAndForget(logDecisionOnChain) — non-blocking (F-003)
+│                      → updates trade row with mantle_tx_hash on confirm
 │  9. manageTrades  │  → check SL/TP/BE, close if hit
 │ 10. Mantle close  │  → fireAndForget(logDecisionOnChain) on trade close
 │ 11. processRetryQ │  → retry failed Mantle writes (3 attempts, 60s apart)
+│                      → dead-letters after 3 failures
 │ 12. updateHeartbeat│
 └──────────────────┘
 ```
@@ -215,8 +233,9 @@ User API Keys:
 - `scoreAIConfidence(setup, symbol)` — calls Claude with setup details
 - Prompt includes: symbol, direction, entry, SL, TP, HTF trend, session, ATR
 - Claude returns JSON: `{"confidence": <0-10000>, "reasoning": "<one sentence>"}`
-- Non-blocking — if Claude fails, returns `{confidence: 0}` (deterministic SMC fallback)
-- Score written on-chain via `logDecision(aiConfidence)` → contract stores it
+- Non-blocking — if Claude fails or parsing errors, returns `{confidence: 0}` (F-003)
+- Score written on-chain via `logDecision(aiConfidence)` → stored in AgentTradeRegistry
+- Also stored in Supabase trades table (`ai_confidence`, `ai_reasoning` columns)
 
 ### Multi-User Architecture
 
@@ -265,7 +284,7 @@ Walk-Forward validation engine:
 
 - **Deployed:** `0x0c26e1f25735798CB94E2CC1851adeBfA0276142` on Mantle Mainnet (chain 5000)
 - **Explorer:** https://explorer.mantle.xyz/address/0x0c26e1f25735798CB94E2CC1851adeBfA0276142
-- **Sourcify:** partial verification (bytecode match confirmed)
+- **Verification:** Sourcify partial match — `contracts/standard-input.json` ready for manual Blockscout verification
 
 ### Contract Interface
 
@@ -276,9 +295,22 @@ getDecision(id) → TradeDecision struct
 getDecisionsPaginated(offset, limit) → (TradeDecision[], total)
 ```
 
-Each `TradeDecision` stored on-chain contains: symbol, action, entry/sl/tp prices (×1e8), direction, AI confidence score (0-10000), and block timestamp.
+Each `TradeDecision` stored on-chain contains: symbol, action, entry/sl/tp prices (×1e8), direction, AI confidence score (0-10000 basis points), and block timestamp.
 
-Every decision emits a `DecisionLogged` event visible on Mantle Explorer.
+Every decision emits a `DecisionLogged` event — verifiable on Mantle Explorer.
+
+### ERC-8004 Identity Registry
+
+- **Address:** `0x8004A818BFB912233c491871b3d84c89A494BD9e` (hardcoded in constants.ts, override via env)
+- **Function:** `mint(address to, string name, string strategy, string metadataURI) → uint256`
+- **NFT minted:** TX `0x1e8612cf8a3771e7afd857ac0afa76fe4cf4835fa0110836ec3de2c06f44d1d6` (block 95,308,789)
+- **Display:** AgentIdentity page shows "Agent Registered" with explorer link when tokenId unavailable
+- **Note:** ERC-8004 uses custom events (not standard ERC-721 Transfer). Token ID retrieved via balanceOf fallback.
+
+### ERC-8004 Reputation Registry
+
+- **Address:** `0x8004B663056A597Dffe9eCcC1965A193B7388713` (hardcoded in constants.ts, override via env)
+- **Purpose:** Agent reputation tracking (to integrate)
 
 ### Module Architecture
 
@@ -288,16 +320,33 @@ initMantleFromEnv()             → Wallet | null (from MANTLE_PRIVATE_KEY)
 isMantleConnected()             → boolean
 getMantleAddress()              → string | null
 logDecisionOnChain(decision)    → txHash | null
-  Prefers: deployed AgentTradeRegistry contract
-  Fallback: self-call with ABI-encoded calldata
+  Preferred: deployed AgentTradeRegistry contract
+  Fallback: self-call with ABI-encoded calldata (no contract needed)
 fireAndForget(fn, label)        → void (never throws)
 processRetryQueue()             → retryCount
   Max 3 attempts, 60s between retries
   Dead-letters exhausted entries
 mintAgentNFT(metadata)          → { tokenId, txHash }
 getAgentOnChainHistory(addr, N) → AgentOnChainRecord[]
+  Scans blocks for self-call transactions with DecisionLogged selector
 getMantleWalletInfo()           → wallet metadata
 getTxExplorerUrl(txHash)        → explorer link
+getRetryQueueStatus()           → { pending, entries[] }
+```
+
+### Decision Type
+
+```typescript
+interface Decision {
+  symbol: string;
+  action: 'open' | 'close';
+  entry: number;      // price × 1e8 on-chain
+  sl: number;
+  tp: number;
+  direction: 'long' | 'short';
+  tradeId: string;    // UUID from Supabase trades.id
+  aiConfidence?: number; // 0-10000, 0 = deterministic SMC
+}
 ```
 
 ### Design Rules
@@ -305,16 +354,33 @@ getTxExplorerUrl(txHash)        → explorer link
 - **F-003 enforced:** `fireAndForget` wraps all Mantle writes — never blocks trade execution
 - **Private key:** held in process memory only. Never logged, never stored in Supabase
 - **Retry queue:** failed writes retry 3 times with 60s intervals, then dead-letter
-- **Self-call fallback:** if no contract address configured, logs decisions as calldata in 0-value self-transfers
+- **Contract preferred:** if AGENT_TRADE_REGISTRY_ADDRESS is set, uses deployed contract (structured events). Falls back to self-call calldata otherwise.
 
 ### Integration Points
 
 1. **Config → Mantle Connection tab:** wallet address display, connect button, mint NFT
-2. **Agent Identity page:** NFT metadata, on-chain decision history feed
-3. **botEngine.ts → executeTrade():** `fireAndForget(logDecisionOnChain)` after each trade
+2. **Agent Identity page:** wallet card, NFT card, on-chain decision log, stats, retry queue, Demo Day mode
+3. **botEngine.ts → executeTrade():** `fireAndForget(logDecisionOnChain)` after Supabase insert — captures trade ID, updates row with tx hash
 4. **botEngine.ts → manageOpenTrades():** `fireAndForget(logDecisionOnChain)` on trade close
-5. **botEngine.ts → runLoop():** `processRetryQueue()` every iteration
-6. **Supabase trades table:** `mantle_tx_hash`, `is_on_chain`, `mantle_block`, `mantle_logged_at`, `ai_confidence`, `ai_reasoning` columns
+5. **botEngine.ts → runLoop():** `processRetryQueue()` every iteration (60s)
+6. **Supabase trades table:** `mantle_tx_hash`, `is_on_chain`, `mantle_block`, `mantle_logged_at`, `ai_confidence`, `ai_reasoning`
+
+---
+
+## Agent Identity Page (`src/pages/AgentIdentity.tsx`)
+
+Fully built with real API connections:
+
+| Section | Data source | Features |
+|---------|------------|----------|
+| Wallet card | GET /api/mantle/status | Address + copy, network, chain ID, mainnet badge, connected status |
+| ERC-8004 NFT card | GET /api/mantle/status + POST /api/mantle/mint-nft | Minted state (token ID + tx link) or mint button with error handling |
+| Retry queue | GET /api/mantle/status | Pending count badge, entry list with attempts/3 |
+| Decision log table | GET /api/mantle/history | Block, age, action badge, symbol, direction, entry/SL/TP, AI score, tx explorer link |
+| Cumulative stats | Computed from history | Total decisions, avg AI confidence %, notional volume, last block |
+| Demo Day mode | Client-side | Fullscreen overlay, exit button, expanded stats column |
+| Block range | Client-side | 100/500/1000/5000 block selector |
+| Auto-refresh | 30s interval | All data refreshed automatically |
 
 ---
 
@@ -322,10 +388,12 @@ getTxExplorerUrl(txHash)        → explorer link
 
 | Component | Platform | Notes |
 |-----------|----------|-------|
-| Frontend | Vercel | Static SPA, `vite build` |
-| Backend | Fly.io | Express server, `tsx server.ts` |
-| Database | Supabase | PostgreSQL with RLS |
-| Smart Contract | Mantle Mainnet | AgentTradeRegistry @ 0x0c26...6142 |
+| Frontend | Vercel | Static SPA, `vite build`. URL: signal-deck-beta.vercel.app |
+| Backend | Fly.io | Express server, `tsx server.ts`. URL: signal-deck.fly.dev |
+| Database | Supabase | PostgreSQL with RLS. Project: kmowwmovfbjxvybkzoci |
+| AgentTradeRegistry | Mantle Mainnet | `0x0c26e1f25735798CB94E2CC1851adeBfA0276142` |
+| ERC-8004 Identity | Mantle Mainnet | `0x8004A818BFB912233c491871b3d84c89A494BD9e` |
+| ERC-8004 Reputation | Mantle Mainnet | `0x8004B663056A597Dffe9eCcC1965A193B7388713` |
 | API Proxy | vercel.json rewrites | `/api/*` → `signal-deck.fly.dev/api/*` |
 
 ### Environment Variables
@@ -337,18 +405,19 @@ getTxExplorerUrl(txHash)        → explorer link
 **Fly.io (runtime):**
 - `SUPABASE_URL`, `SUPABASE_KEY` — Supabase service role
 - `SUPABASE_SERVICE_ROLE_KEY` — alternative service key
-- `BYBIT_API_KEY`, `BYBIT_API_SECRET` — default exchange credentials (optional)
+- `BYBIT_API_KEY`, `BYBIT_API_SECRET` — default exchange credentials
 - `BYBIT_DEFAULT_TYPE` — "spot" or "swap"
 - `BYBIT_TESTNET` — "true" for testnet
 - `BYBIT_HOSTNAME` — custom hostname (optional)
-- `ANTHROPIC_API_KEY` — Claude API (for AI Analyst + OpenClaw + AI scoring)
+- `ANTHROPIC_API_KEY` — Claude API (AI Analyst + OpenClaw + AI scoring)
 - `ANTHROPIC_MODEL` — model ID (default: claude-sonnet-4-20250514)
 - `ENCRYPTION_SECRET` — AES-256 key for API key encryption
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` — notification config
 - `MANTLE_PRIVATE_KEY` — Mantle wallet private key (never logged)
-- `MANTLE_MAINNET` — "true" for mainnet, default: testnet
-- `AGENT_TRADE_REGISTRY_ADDRESS` — deployed contract address
-- `ERC8004_CONTRACT_ADDRESS` — ERC-8004 NFT contract (TBD)
+- `MANTLE_MAINNET` — "true" for mainnet
+- `AGENT_TRADE_REGISTRY_ADDRESS` — AgentTradeRegistry contract
+- `ERC8004_IDENTITY_REGISTRY` — ERC-8004 identity NFT contract
+- `ERC8004_REPUTATION_REGISTRY` — ERC-8004 reputation contract
 - `PORT` — server port (default 3000)
 
 ---
@@ -369,6 +438,7 @@ getTxExplorerUrl(txHash)        → explorer link
 | `express` | HTTP server |
 | `ethers` ^6 | Mantle blockchain integration |
 | `solc` ^0.8.20 | Solidity compiler (dev) |
+| `hardhat` ^3 | Solidity dev tooling (dev) |
 
 ---
 
@@ -376,32 +446,32 @@ getTxExplorerUrl(txHash)        → explorer link
 
 ```
 Signal-Deck/
-├── server.ts                — Express backend
-├── botEngine.ts             — SMCBot trading loop + AI scoring + Mantle logging
+├── server.ts                — Express backend (auth, data, AI, Mantle routes)
+├── botEngine.ts             — SMCBot + AI scoring + Mantle logging + retry queue
 ├── vite.config.ts           — Vite + Tailwind config
-├── vercel.json              — API proxy rewrites
+├── vercel.json              — API proxy rewrites to Fly.io
 ├── hardhat.config.js        — Hardhat config (Mantle mainnet + testnet)
 ├── package.json
 │
 ├── contracts/
 │   ├── AgentTradeRegistry.sol    — On-chain trade decision registry
-│   ├── AgentTradeRegistry.bin    — Compiled bytecode
+│   ├── AgentTradeRegistry.bin    — Compiled bytecode (11798 bytes)
 │   └── standard-input.json       — For Explorer contract verification
 │
 ├── scripts/
-│   ├── deploy.mjs           — Contract deployment script (ethers.js)
-│   └── test-e2e.ts          — End-to-end test (strategy → AI → Mantle)
+│   ├── deploy.mjs           — Contract deployment (ethers.js v6)
+│   └── test-e2e.ts          — End-to-end test (strategy → AI → Supabase → Mantle)
 │
 ├── src/
 │   ├── App.tsx              — Router + sidebar + layout
-│   ├── main.tsx             — React entry point
+│   ├── main.tsx             — React entry point + fetch auth interceptor
 │   ├── index.css            — Global styles + Tailwind
 │   │
 │   ├── pages/
-│   │   ├── CommandCenter.tsx  — Main dashboard (KPI, positions, console)
-│   │   ├── AgentIdentity.tsx  — ERC-8004 NFT + on-chain log (TO BUILD)
+│   │   ├── CommandCenter.tsx  — Main dashboard (KPI, positions, console, signal feed)
+│   │   ├── AgentIdentity.tsx  — Wallet, ERC-8004 NFT, decision log, stats, retry, Demo Day
 │   │   ├── StrategyLab.tsx    — Backtest + AI + diagnostics tabs
-│   │   ├── TradeHistory.tsx   — Trade table + slide-over detail
+│   │   ├── TradeHistory.tsx   — Trade table + slide-over detail + tx hash column
 │   │   ├── Config.tsx         — Bot settings + Mantle + DB tabs
 │   │   ├── BacktestPage.tsx   — Backtest engine UI
 │   │   ├── AIAnalyst.tsx      — AXIOM AI strategy analysis
@@ -426,9 +496,9 @@ Signal-Deck/
 │   ├── lib/
 │   │   ├── strategy.ts        — SMC FVG detection + HTF analysis
 │   │   ├── backtester.ts      — Backtest + Walk-Forward engine
-│   │   ├── mantle.ts          — Mantle integration (contract + wallet + retry)
-│   │   ├── supabase.ts        — Supabase client + types
-│   │   ├── constants.ts       — Shared constants + Mantle config + contract address
+│   │   ├── mantle.ts          — Mantle integration (wallet, contract, NFT, retry, history)
+│   │   ├── supabase.ts        — Supabase client + types (Trade includes mantle + AI columns)
+│   │   ├── constants.ts       — Shared constants + Mantle config + contract addresses
 │   │   ├── utils.ts           — Formatting helpers (R, currency, dates)
 │   │   └── openclawSchema.ts  — OpenClaw command Zod schemas
 │   │
@@ -445,22 +515,25 @@ Signal-Deck/
 | Symbol format mismatch (spot vs swap) | `/api/prices` → symbolMap | Fixed — uses user account type for resolution |
 | Auth redirect loop on Zustand hydration | `AuthGate.tsx` | Guarded by `_hasHydrated` check |
 | Daily loss calculation includes paper trades | `botEngine.ts` `checkDailyLoss()` | Fixed — filters by `is_paper` |
-| Preview deploys missing Supabase env vars | Vercel env config | VITE_SUPABASE_URL/VITE_SUPABASE_ANON_KEY must be added to Preview environment |
-| AI scoring JSON parse failure | `botEngine.ts` `scoreAIConfidence()` | Non-blocking — falls back to aiConfidence=0 on parse error (F-003) |
+| Preview deploys missing Supabase env vars | Vercel env config | VITE_SUPABASE_URL/VITE_SUPABASE_ANON_KEY must be in Preview |
+| AI scoring JSON parse failure (F-004) | `botEngine.ts` `scoreAIConfidence()` | Fixed — try/catch falls back to confidence=0 |
+| Solidity stack too deep (F-005) | `AgentTradeRegistry.sol` | Fixed — field-by-field assignment instead of struct literal |
+| Hardhat ESM conflict (F-006) | `hardhat.config.js` | Fixed — deploy.mjs uses ethers.js directly |
 | Explorer API intermittent 502 | Mantle Explorer | TX verification via RPC as fallback |
-| Contract partial verification only | Sourcify | Metadata hash mismatch — manual verification via standard-input.json needed for full Explorer verification |
+| Contract partial verification only | Sourcify | `standard-input.json` ready for manual Blockscout verification |
+| ERC-8004 no standard Transfer events | `mintAgentNFT()` | Fallback to balanceOf; tx hash as proof of mint |
 
 ---
 
 ## Hackathon Checklist
 
-- [x] Smart contract deployed on Mantle Mainnet
+- [x] Smart contract deployed on Mantle Mainnet (`0x0c26...6142`)
 - [ ] Contract fully verified on Mantle Explorer
 - [x] AI-powered function callable on-chain (aiConfidence in logDecision)
-- [x] Frontend demo publicly accessible
+- [x] Frontend demo publicly accessible (signal-deck-beta.vercel.app)
 - [ ] Deployment address in DoraHacks submission
 - [ ] Demo video (≥ 2 min)
 - [ ] README with setup instructions + architecture + contract address
-- [ ] ERC-8004 NFT minted
-- [ ] AgentIdentity page built
+- [x] ERC-8004 NFT minted (TX `0x1e86...`)
+- [x] AgentIdentity page built (wallet, minted NFT + explorer link, decision log, stats, retry queue, Demo Day)
 - [ ] Mantle on-chain data as core data source
