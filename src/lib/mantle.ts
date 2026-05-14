@@ -436,12 +436,13 @@ export async function getOnChainPerformance(): Promise<OnChainPerformance | null
     for (let offset = 0n; offset < total; offset += limit) {
       const [batch] = await registry.getDecisionsPaginated(offset, limit);
       for (const d of batch) {
+        // ethers v6 returns tuples as arrays when ABI lacks field names
         decisions.push({
-          symbol: d.symbol,
-          action: d.action === 'open' ? 'open' : 'close',
-          entry: Number(d.entry) / 1e8,
-          direction: d.direction === 'long' ? 'long' : 'short',
-          aiConfidence: Number(d.aiConfidence),
+          symbol: String(d[0] || d.symbol || ''),
+          action: (String(d[1] || d.action || '')).toLowerCase() === 'close' ? 'close' : 'open',
+          entry: Number(d[2] || d.entry || 0) / 1e8,
+          direction: String(d[5] || d.direction || 'long') === 'short' ? 'short' : 'long',
+          aiConfidence: Number(d[6] || d.aiConfidence || 0),
         });
       }
     }
