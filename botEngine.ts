@@ -799,7 +799,6 @@ Return ONLY valid JSON — no markdown, no explanation outside JSON:
       const dailyLoss = Math.abs(Math.min(totalR, 0)) * riskPct;
 
       if (dailyLoss >= DAILY_LOSS_HALT_PCT) {
-        await this.notifyTelegram(`🚨 *Daily Loss Halt*\nToday P&L: ${totalR.toFixed(2)}R\nNo new trades.`);
         await this.logStatus(`DAILY LOSS HALT: ${dailyLoss.toFixed(2)}%`, 'reject');
         return true;
       }
