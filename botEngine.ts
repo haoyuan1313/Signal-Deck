@@ -3,6 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
 import { detectSMCSetup, OHLCV, StrategySetup, calcATR, calcEMA, getHTFTrend, SMCOptions, DEFAULT_ALLOWED_SESSIONS } from './src/lib/strategy';
 import { MAX_OPEN_POSITIONS, DAILY_LOSS_HALT_PCT } from './src/lib/constants';
+import { logDecisionOnChain, fireAndForget, processRetryQueue } from './src/lib/mantle';
 
 dotenv.config();
 
@@ -490,10 +491,13 @@ export class SMCBot {
     };
 
     const sb = getSupabase();
+    let dbTradeId: string | null = null;
     if (sb) {
-      const { error } = await sb.from('trades').insert(tradeData);
+      const { data: inserted, error } = await sb.from('trades').insert(tradeData).select('id').single();
       if (error) {
         console.error(`Bot [${this.userId}]: Trade insert error:`, error.message);
+      } else if (inserted) {
+        dbTradeId = inserted.id;
       }
     }
 
@@ -501,6 +505,33 @@ export class SMCBot {
     await this.notifyTelegram(
       `✅ *${tag}*\n${symbol} ${direction.toUpperCase()}\nEntry: ${curPrice.toFixed(4)}\nSL: ${sl.toFixed(4)}\nTP: ${tp.toFixed(4)}`,
     );
+
+    // Mantle on-chain log — fire-and-forget, never blocks trade execution (F-003)
+    if (dbTradeId) {
+      const entry = curPrice;
+      fireAndForget(async () => {
+        const txHash = await logDecisionOnChain({
+          symbol,
+          action: 'open',
+          entry,
+          sl,
+          tp,
+          direction,
+          tradeId: dbTradeId!,
+        });
+        if (txHash) {
+          const sb2 = getSupabase();
+          if (sb2) {
+            await sb2.from('trades').update({
+              mantle_tx_hash: txHash,
+              is_on_chain: true,
+              mantle_logged_at: new Date().toISOString(),
+            }).eq('id', dbTradeId);
+            console.log(`Bot [${this.userId}]: Mantle tx recorded — ${txHash}`);
+          }
+        }
+      }, `mantle-log-open-${dbTradeId}`);
+    }
   }
 
   private async manageOpenTrades() {
@@ -550,6 +581,26 @@ export class SMCBot {
             r:         Math.round(pnlFinal * 100) / 100,
             bars_held: Math.floor(elapsedMins),
           }).eq('id', trade.id);
+
+          // Fire-and-forget close decision on Mantle — never blocks (F-003)
+          fireAndForget(async () => {
+            const txHash = await logDecisionOnChain({
+              symbol: trade.symbol,
+              action: 'close',
+              entry: trade.entry,
+              sl: trade.sl_init ?? trade.sl,
+              tp: trade.tp,
+              direction: trade.direction,
+              tradeId: trade.id,
+            });
+            if (txHash) {
+              await sb.from('trades').update({
+                mantle_tx_hash: txHash,
+                is_on_chain: true,
+                mantle_logged_at: new Date().toISOString(),
+              }).eq('id', trade.id);
+            }
+          }, `mantle-log-close-${trade.id}`);
 
           const reason = isTP ? 'TP 🟢' : isSL ? 'SL 🔴' : isTimeout ? 'TIMEOUT ⌛' : 'STAGNATION 🛑';
           await this.logStatus(`🏁 CLOSED ${trade.symbol} | ${reason} | PnL: ${pnlFinal.toFixed(2)}R`, 'accept');
@@ -755,6 +806,16 @@ export class SMCBot {
       } catch (err) {
         console.error(`Bot [${this.userId}]: Loop error:`, err);
         await this.logStatus(`LOOP ERROR: ${err instanceof Error ? err.message : String(err)}`, 'info');
+      }
+
+      // Process failed Mantle writes (non-blocking)
+      try {
+        const retried = await processRetryQueue();
+        if (retried > 0) {
+          console.log(`Bot [${this.userId}]: Mantle retry queue — ${retried} succeeded`);
+        }
+      } catch (err) {
+        console.error(`Bot [${this.userId}]: processRetryQueue error:`, err);
       }
 
       await new Promise(r => setTimeout(r, 60000));

@@ -8,6 +8,16 @@ import { createClient } from "@supabase/supabase-js";
 import { startAllUserBots, refreshUserBots } from "./botEngine";
 import { OHLCV } from "./src/lib/strategy";
 import { runBacktest, runWalkForward } from "./src/lib/backtester";
+import {
+  initMantleFromEnv,
+  connectMantle,
+  isMantleConnected,
+  getMantleAddress,
+  getMantleWalletInfo,
+  getAgentOnChainHistory,
+  getRetryQueueStatus,
+  mintAgentNFT,
+} from './src/lib/mantle';
 
 dotenv.config();
 
@@ -693,6 +703,151 @@ async function startServer() {
       if (error.message.includes('10003') || error.message.includes('10004')) return res.status(401).json({ error: "Invalid API Key - please check your keys in the API Keys page." });
       console.error("[balance] error:", error.message);
       res.status(500).json({ error: error.message });
+    }
+  });
+
+  // ── Auth middleware ──────────────────────────────────────────────────────
+  async function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
+    const token = extractBearerToken(req);
+    if (!token) return res.status(401).json({ error: 'No session token' });
+    const user = await getUserBySessionToken(token);
+    if (!user) return res.status(401).json({ error: 'Session invalid or expired' });
+    (req as any).user = user;
+    next();
+  }
+
+  // ── Mantle Routes ──────────────────────────────────────────────────────
+
+  // GET /api/mantle/status — wallet, NFT, retry queue overview
+  app.get('/api/mantle/status', requireAuth, async (req, res) => {
+    try {
+      const walletInfo = getMantleWalletInfo();
+      const retryStatus = getRetryQueueStatus();
+
+      let nftStatus: any = null;
+      if (supabase && walletInfo.address) {
+        const { data } = await supabase
+          .from('agent_identity')
+          .select('*')
+          .eq('wallet_address', walletInfo.address)
+          .maybeSingle();
+        nftStatus = data ?? null;
+      }
+
+      res.json({
+        wallet: walletInfo,
+        nft: nftStatus
+          ? { minted: true, tokenId: nftStatus.token_id, txHash: nftStatus.mint_tx_hash }
+          : { minted: false },
+        retryQueue: retryStatus,
+      });
+    } catch (err: any) {
+      console.error('[mantle:status]', err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/mantle/connect — connect wallet with private key (NEVER logged)
+  app.post('/api/mantle/connect', requireAuth, express.json(), async (req, res) => {
+    try {
+      const { privateKey } = req.body || {};
+      if (!privateKey || typeof privateKey !== 'string' || privateKey.trim().length < 64) {
+        return res.status(400).json({ error: 'Valid private key required (64+ hex chars).' });
+      }
+
+      const wallet = connectMantle(privateKey.trim());
+
+      if (supabase) {
+        const address = wallet.address;
+        await supabase.from('mantle_config').upsert({
+          id: '00000000-0000-0000-0000-000000000002',
+          wallet_address: address,
+          is_connected: true,
+          network: 'mantle',
+          chain_id: null,
+          is_testnet: process.env.MANTLE_MAINNET !== 'true',
+          last_connected_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        });
+      }
+
+      console.log(`[mantle:connect] Wallet connected: ${wallet.address}`);
+      res.json({ connected: true, address: wallet.address });
+    } catch (err: any) {
+      console.error('[mantle:connect]', err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/mantle/mint-nft — mint ERC-8004 agent identity NFT
+  app.post('/api/mantle/mint-nft', requireAuth, express.json(), async (req, res) => {
+    try {
+      if (!isMantleConnected()) {
+        return res.status(400).json({ error: 'Wallet not connected. POST /api/mantle/connect first.' });
+      }
+
+      const { name, strategy, metadataURI } = req.body || {};
+      if (!name || !strategy) {
+        return res.status(400).json({ error: 'name and strategy are required.' });
+      }
+
+      const result = await mintAgentNFT({
+        name: String(name).trim(),
+        strategy: String(strategy).trim(),
+        metadataURI: String(metadataURI || 'https://signaldeck.vercel.app/api/agent/metadata'),
+      });
+
+      const address = getMantleAddress();
+      if (supabase && address) {
+        await supabase.from('agent_identity').upsert({
+          wallet_address: address,
+          token_id: result.tokenId,
+          nft_name: String(name).trim(),
+          strategy: String(strategy).trim(),
+          network: 'mantle',
+          chain_id: process.env.MANTLE_MAINNET === 'true' ? 5000 : 5001,
+          mint_tx_hash: result.txHash,
+          minted_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'wallet_address' });
+      }
+
+      res.json({ success: true, ...result });
+    } catch (err: any) {
+      console.error('[mantle:mint-nft]', err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/mantle/history — agent on-chain decision history
+  app.get('/api/mantle/history', requireAuth, async (req, res) => {
+    try {
+      const address = getMantleAddress();
+      if (!address) {
+        return res.status(400).json({ error: 'Wallet not connected.' });
+      }
+
+      const maxBlocks = Math.min(
+        5000,
+        Math.max(10, parseInt(String(req.query.maxBlocks || '500'), 10) || 500),
+      );
+
+      const history = await getAgentOnChainHistory(address, maxBlocks);
+      res.json({ address, count: history.length, history });
+    } catch (err: any) {
+      console.error('[mantle:history]', err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/mantle/retry-queue — retry queue status
+  app.get('/api/mantle/retry-queue', requireAuth, async (req, res) => {
+    try {
+      const status = getRetryQueueStatus();
+      res.json(status);
+    } catch (err: any) {
+      console.error('[mantle:retry-queue]', err.message);
+      res.status(500).json({ error: err.message });
     }
   });
 
@@ -1492,6 +1647,9 @@ async function startServer() {
 
         // Start multi-user bot management
         await startAllUserBots();
+
+        // Initialise Mantle on-chain integration
+        initMantleFromEnv();
         
         // Refresh bots every 5 minutes
         setInterval(refreshUserBots, 5 * 60 * 1000);

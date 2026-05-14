@@ -72,6 +72,10 @@ export type Trade = {
   exit_price: number | null;
   opened_at: string;
   closed_at: string | null;
+  mantle_tx_hash?: string | null;
+  is_on_chain?: boolean;
+  mantle_block?: number | null;
+  mantle_logged_at?: string | null;
 };
 
 export type Signal = {
