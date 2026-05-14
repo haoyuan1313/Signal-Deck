@@ -156,6 +156,7 @@ const REGISTRY_ABI = [
   'function logDecision(string,string,int256,int256,int256,string,uint256) external returns (uint256)',
   'function getDecisionCount() external view returns (uint256)',
   'function agent() external view returns (address)',
+  'function getDecisionsPaginated(uint256,uint256) external view returns (tuple(string,string,int256,int256,int256,string,uint256,uint256)[], uint256)',
 ];
 
 function getRegistryContract(): ethers.Contract | null {
