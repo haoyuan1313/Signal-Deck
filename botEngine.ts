@@ -210,10 +210,30 @@ export class SMCBot {
   }
 
   private async notifyTelegram(message: string) {
-    const token  = process.env.TELEGRAM_BOT_TOKEN;
-    const chatId = process.env.TELEGRAM_CHAT_ID;
-    if (!token || !chatId) return;
     try {
+      let token: string | undefined;
+      let chatId: string | undefined;
+
+      // 1. Try Supabase telegram_config first
+      const sb = getSupabase();
+      if (sb) {
+        try {
+          const { data } = await sb.from('telegram_config')
+            .select('bot_token_enc, chat_id')
+            .eq('id', 'singleton')
+            .maybeSingle();
+          if (data?.bot_token_enc && data?.chat_id) {
+            token = decryptApiKey(data.bot_token_enc);
+            chatId = data.chat_id;
+          }
+        } catch { /* fall through to env vars */ }
+      }
+
+      // 2. Fall back to env vars
+      if (!token) token = process.env.TELEGRAM_BOT_TOKEN;
+      if (!chatId) chatId = process.env.TELEGRAM_CHAT_ID;
+      if (!token || !chatId) return;
+
       await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
