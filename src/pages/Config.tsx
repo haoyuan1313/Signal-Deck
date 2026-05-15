@@ -381,6 +381,33 @@ export default function Config() {
                       </div>
 
                       <div className="space-y-4">
+                        <label className="text-xs font-bold uppercase text-zinc-500 tracking-wider">Market Sessions</label>
+                        <div className="grid grid-cols-2 gap-2">
+                          {([
+                            { id: 'asian', label: 'Asian', color: 'bg-blue-500/10 text-blue-400 border-blue-500/20' },
+                            { id: 'london', label: 'London', color: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' },
+                            { id: 'ny_am', label: 'NY Early', color: 'bg-amber-500/10 text-amber-400 border-amber-500/20' },
+                            { id: 'ny_pm', label: 'NY Late', color: 'bg-rose-500/10 text-rose-400 border-rose-500/20' },
+                            { id: 'late', label: 'Late', color: 'bg-zinc-500/10 text-zinc-400 border-zinc-500/20' },
+                          ] as const).map(({ id, label, color }) => (
+                            <label key={id} className={cn(
+                              "flex items-center gap-2 px-3 py-2.5 rounded-xl border cursor-pointer transition-all text-xs font-bold",
+                              formData.allowed_sessions.includes(id) ? color : "bg-zinc-800 border-transparent text-zinc-600"
+                            )}>
+                              <input type="checkbox" className="hidden" checked={formData.allowed_sessions.includes(id)}
+                                onChange={(e) => {
+                                  const newSessions = e.target.checked
+                                    ? [...formData.allowed_sessions, id]
+                                    : formData.allowed_sessions.filter(s => s !== id);
+                                  setFormData({...formData, allowed_sessions: newSessions});
+                                }} />
+                              {label}
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="space-y-4">
                         <label className="text-xs font-bold uppercase text-zinc-500 tracking-wider">Allowed Directions</label>
                         <div className="flex gap-4">
                           {['long', 'short'].map(dir => (
