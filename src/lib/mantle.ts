@@ -157,6 +157,7 @@ const REGISTRY_ABI = [
   'function getDecisionCount() external view returns (uint256)',
   'function agent() external view returns (address)',
   'function getDecisionsPaginated(uint256,uint256) external view returns (tuple(string,string,int256,int256,int256,string,uint256,uint256)[], uint256)',
+  'function decisions(uint256) external view returns (tuple(string,string,int256,int256,int256,string,uint256,uint256))',
 ];
 
 function getRegistryContract(): ethers.Contract | null {
@@ -377,9 +378,50 @@ export async function getAgentOnChainHistory(
             topics: [DECISION_LOGGED_TOPIC, null, paddedAgent],
           });
 
+          // Collect decision IDs from logs
+          const logEntries: { log: ethers.Log; decisionId: bigint }[] = [];
           for (const log of logs) {
+            logEntries.push({ log, decisionId: BigInt(log.topics[1]) });
+          }
+
+          // Batch-fetch full decision data via raw eth_call (ethers tuple decoder is fragile)
+          const decisionsCallData = logEntries.map(({ decisionId }) =>
+            ethers.id('decisions(uint256)').slice(0, 10) +
+            ethers.zeroPadValue(ethers.toBeHex(decisionId), 32).slice(2),
+          );
+
+          const rawResults = await Promise.all(
+            decisionsCallData.map((data) =>
+              provider!.call({ to: contractAddr, data }).catch(() => null),
+            ),
+          );
+
+          for (let i = 0; i < logEntries.length; i++) {
+            const { log, decisionId } = logEntries[i];
+            const raw = rawResults[i];
             const block = await provider.getBlock(log.blockNumber);
-            const decision = decodeDecisionFromLog(log.data);
+
+            let decision: Decision;
+            if (raw && raw !== '0x') {
+              try {
+                const d = decodeDecisionFromRaw(raw);
+                decision = {
+                  symbol: d.symbol,
+                  action: d.action as Decision['action'],
+                  entry: Number(d.entry) / 1e8,
+                  sl: Number(d.sl) / 1e8,
+                  tp: Number(d.tp) / 1e8,
+                  direction: d.direction as Decision['direction'],
+                  tradeId: `chain-${decisionId}`,
+                  aiConfidence: Number(d.aiConfidence),
+                };
+              } catch {
+                decision = decodeDecisionFromLog(log.data);
+              }
+            } else {
+              decision = decodeDecisionFromLog(log.data);
+            }
+
             results.push({
               txHash: log.transactionHash,
               blockNumber: log.blockNumber,
@@ -441,6 +483,25 @@ async function scanBlocksInRange(
       }
     }
   }
+}
+
+// Manually decode tuple(string,string,int256,int256,int256,string,uint256,uint256)
+// ethers v6 Contract tuple decoder chokes on the returned data.
+function decodeDecisionFromRaw(data: string): { symbol: string; action: string; entry: bigint; sl: bigint; tp: bigint; direction: string; aiConfidence: bigint } {
+  const abi = ethers.AbiCoder.defaultAbiCoder();
+  const decoded = abi.decode(
+    ['string', 'string', 'int256', 'int256', 'int256', 'string', 'uint256', 'uint256'],
+    data,
+  );
+  return {
+    symbol: decoded[0],
+    action: decoded[1],
+    entry: decoded[2],
+    sl: decoded[3],
+    tp: decoded[4],
+    direction: decoded[5],
+    aiConfidence: decoded[6],
+  };
 }
 
 function decodeDecisionFromLog(data: string): Decision {
