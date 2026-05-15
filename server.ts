@@ -1613,6 +1613,72 @@ async function startServer() {
     res.json({ ready: allOk, checks });
   });
 
+  // Fetch Bybit trade history for the authenticated user
+  app.get('/api/bybit/trades', requireAuth, async (req, res) => {
+    try {
+      const userId = ((req as any).user?.user_id as string) || getEffectiveUserId(req.headers['x-user-id'] as string);
+
+      const { data: keyRecord } = await supabase
+        .from('user_api_keys')
+        .select('id, label, bybit_api_key_enc, bybit_api_secret_enc, bybit_testnet, account_type')
+        .eq('user_id', userId)
+        .eq('is_active', true)
+        .maybeSingle();
+
+      if (!keyRecord) return res.status(404).json({ error: 'No active API key found for your account' });
+
+      const decKey = decryptApiKey(keyRecord.bybit_api_key_enc);
+      const decSec = decryptApiKey(keyRecord.bybit_api_secret_enc);
+
+      const ex = new ccxt.bybit({
+        apiKey: decKey, secret: decSec,
+        enableRateLimit: true, timeout: 10000,
+        options: { defaultType: keyRecord.account_type || 'swap' },
+      });
+      if (keyRecord.bybit_testnet) ex.setSandboxMode(true);
+      if (process.env.BYBIT_HOSTNAME) (ex as any).hostname = process.env.BYBIT_HOSTNAME.trim();
+
+      const limit = parseInt(req.query.limit as string) || 30;
+
+      const results = await Promise.allSettled([
+        ex.fetchClosedOrders(undefined, undefined, limit),
+        ex.fetchMyTrades(undefined, undefined, limit),
+        ex.fetchBalance(),
+      ]);
+
+      const errors: string[] = [];
+      const raw = results.map((r, i) => {
+        if (r.status === 'fulfilled') return r.value;
+        errors.push(['fetchClosedOrders', 'fetchMyTrades', 'fetchBalance'][i] + ': ' + (r.reason?.message || String(r.reason)));
+        return null;
+      });
+      const closedOrders = raw[0] as any[];
+      const myTrades = raw[1] as any[];
+      const balance = raw[2] as any;
+
+      if (errors.length === 3) {
+        return res.status(502).json({ error: 'All Bybit requests failed', details: errors });
+      }
+      if (!closedOrders && !myTrades) {
+        return res.status(502).json({ error: 'Failed to fetch trade history', details: errors });
+      }
+
+      const equity = balance?.info?.result?.list?.[0]?.totalEquity || balance?.total?.USDT || 0;
+
+      res.json({
+        mode: keyRecord.bybit_testnet ? 'Testnet' : 'MAINNET',
+        equity: Number(equity).toFixed(2),
+        accountType: keyRecord.account_type,
+        closedOrders: (closedOrders || []).slice(0, limit),
+        myTrades: (myTrades || []).slice(0, limit),
+        errors: errors.length ? errors : undefined,
+      });
+    } catch (err: any) {
+      console.error('/api/bybit/trades error:', err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ── Global Error Handler ──────────────────────────────────────────────────
   app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
     console.error(`[Global Error] ${req.method} ${req.url}:`, err);

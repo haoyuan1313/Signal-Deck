@@ -66,7 +66,7 @@ export default function AgentIdentity() {
   const [minting, setMinting] = useState(false);
   const [mintError, setMintError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const [historyMaxBlocks, setHistoryMaxBlocks] = useState(500);
+  const [historyMaxBlocks, setHistoryMaxBlocks] = useState(300000);
 
   const fetchAll = useCallback(async () => {
     try {
@@ -534,10 +534,10 @@ export default function AgentIdentity() {
                   onChange={e => setHistoryMaxBlocks(Number(e.target.value))}
                   className="bg-zinc-800 border border-zinc-700 rounded-lg text-xs text-zinc-400 px-2 py-1"
                 >
-                  <option value={100}>100 blocks</option>
-                  <option value={500}>500 blocks</option>
-                  <option value={1000}>1000 blocks</option>
-                  <option value={5000}>5000 blocks</option>
+                  <option value={5000}>5K blocks</option>
+                  <option value={50000}>50K blocks</option>
+                  <option value={150000}>150K blocks (~3 days)</option>
+                  <option value={300000}>300K blocks (~1 week)</option>
                 </select>
                 <span className="text-[10px] text-zinc-600 font-mono">{history.length} records</span>
               </div>

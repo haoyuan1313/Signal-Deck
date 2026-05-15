@@ -341,6 +341,9 @@ export async function mintAgentNFT(metadata: NFTMetadata): Promise<{ tokenId: st
 
 // ─── On-Chain History ───────────────────────────────────────────────────────
 
+// Event: DecisionLogged(uint256 indexed decisionId, address indexed by, string symbol, string action, string direction, uint256 aiConfidence, uint256 timestamp)
+const DECISION_LOGGED_TOPIC = '0x2a4ced607d724c69274263cc7c7bb786cf8c7d937d4633c3bc90474f8c2e112c';
+
 export async function getAgentOnChainHistory(
   agentAddress: string,
   maxBlocks: number = 500,
@@ -350,41 +353,49 @@ export async function getAgentOnChainHistory(
     return [];
   }
 
+  const contractAddr = process.env.AGENT_TRADE_REGISTRY_ADDRESS?.toLowerCase();
+
   try {
     const currentBlock = await provider.getBlockNumber();
     const fromBlock = Math.max(0, currentBlock - maxBlocks);
     const results: AgentOnChainRecord[] = [];
 
-    // Fetch blocks with concurrency limit of 10
-    const CONCURRENCY = 10;
-    for (let batchStart = fromBlock; batchStart <= currentBlock; batchStart += CONCURRENCY) {
-      const batchEnd = Math.min(batchStart + CONCURRENCY - 1, currentBlock);
-      const batch = Array.from({ length: batchEnd - batchStart + 1 }, (_, i) => batchStart + i);
+    // Use event logs when contract is available (efficient, precise)
+    if (contractAddr) {
+      const paddedAgent = ethers.zeroPadValue(agentAddress.toLowerCase(), 32);
 
-      const blocks = await Promise.all(
-        batch.map((bn) => provider!.getBlock(bn, true).catch(() => null)),
-      );
+      // Fetch logs in batches to handle RPC limits
+      const BATCH_BLOCKS = 5000;
+      for (let batchFrom = fromBlock; batchFrom < currentBlock; batchFrom += BATCH_BLOCKS) {
+        const batchTo = Math.min(batchFrom + BATCH_BLOCKS - 1, currentBlock);
 
-      for (const block of blocks) {
-        if (!block) continue;
-        for (const txHash of block.transactions) {
-          const tx = block.getPrefetchedTransaction(txHash);
-          if (!tx) continue;
-          if (
-            tx.from?.toLowerCase() !== agentAddress.toLowerCase() ||
-            tx.to?.toLowerCase() !== agentAddress.toLowerCase() ||
-            !tx.data.startsWith(DECISION_SELECTOR)
-          ) continue;
-
-          const decision = decodeDecision(tx.data);
-          results.push({
-            txHash: tx.hash,
-            blockNumber: block.number,
-            timestamp: new Date(block.timestamp * 1000).toISOString(),
-            decision,
+        try {
+          const logs = await provider.getLogs({
+            address: contractAddr,
+            fromBlock: batchFrom,
+            toBlock: batchTo,
+            topics: [DECISION_LOGGED_TOPIC, null, paddedAgent],
           });
+
+          for (const log of logs) {
+            const block = await provider.getBlock(log.blockNumber);
+            const decision = decodeDecisionFromLog(log.data);
+            results.push({
+              txHash: log.transactionHash,
+              blockNumber: log.blockNumber,
+              timestamp: block ? new Date(block.timestamp * 1000).toISOString() : new Date().toISOString(),
+              decision,
+            });
+          }
+        } catch (batchErr: any) {
+          // Some RPCs have log limits — fall through to per-block scan for this batch
+          console.warn(`[Mantle] Log query failed for batch ${batchFrom}-${batchTo}, falling back to block scan:`, batchErr.message);
+          await scanBlocksInRange(batchFrom, batchTo, agentAddress, contractAddr, results);
         }
       }
+    } else {
+      // No contract — scan for self-calls
+      await scanBlocksInRange(fromBlock, currentBlock, agentAddress, null, results);
     }
 
     return results.sort((a, b) => b.blockNumber - a.blockNumber);
@@ -392,6 +403,62 @@ export async function getAgentOnChainHistory(
     console.error('[Mantle] getAgentOnChainHistory failed:', err);
     return [];
   }
+}
+
+async function scanBlocksInRange(
+  fromBlock: number, toBlock: number,
+  agentAddress: string, contractAddr: string | null,
+  results: AgentOnChainRecord[],
+) {
+  const CONCURRENCY = 10;
+  for (let batchStart = fromBlock; batchStart <= toBlock; batchStart += CONCURRENCY) {
+    const batchEnd = Math.min(batchStart + CONCURRENCY - 1, toBlock);
+    const batch = Array.from({ length: batchEnd - batchStart + 1 }, (_, i) => batchStart + i);
+
+    const blocks = await Promise.all(
+      batch.map((bn) => provider!.getBlock(bn, true).catch(() => null)),
+    );
+
+    for (const block of blocks) {
+      if (!block) continue;
+      for (const txHash of block.transactions) {
+        const tx = block.getPrefetchedTransaction(txHash);
+        if (!tx || !tx.data.startsWith(DECISION_SELECTOR)) continue;
+
+        const from = tx.from?.toLowerCase();
+        const to = tx.to?.toLowerCase();
+        const isSelfCall = from === agentAddress.toLowerCase() && to === agentAddress.toLowerCase();
+        const isContractCall = from === agentAddress.toLowerCase() && contractAddr && to === contractAddr;
+        if (!isSelfCall && !isContractCall) continue;
+
+        const decision = decodeDecision(tx.data);
+        results.push({
+          txHash: tx.hash,
+          blockNumber: block.number,
+          timestamp: new Date(block.timestamp * 1000).toISOString(),
+          decision,
+        });
+      }
+    }
+  }
+}
+
+function decodeDecisionFromLog(data: string): Decision {
+  const abi = ethers.AbiCoder.defaultAbiCoder();
+  const [symbol, action, direction, aiConfidence, timestamp] = abi.decode(
+    ['string', 'string', 'string', 'uint256', 'uint256'],
+    data,
+  );
+  return {
+    symbol,
+    action,
+    entry: 0,
+    sl: 0,
+    tp: 0,
+    direction,
+    tradeId: `chain-${timestamp}`,
+    aiConfidence: Number(aiConfidence),
+  };
 }
 
 // ─── On-Chain Performance ──────────────────────────────────────────────────
