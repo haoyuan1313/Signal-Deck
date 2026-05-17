@@ -8,6 +8,7 @@ import { createClient } from "@supabase/supabase-js";
 import { startAllUserBots, refreshUserBots } from "./botEngine";
 import { OHLCV } from "./src/lib/strategy";
 import { runBacktest, runWalkForward } from "./src/lib/backtester";
+import { replayTrade, buildDashboard, ReplayDashboard } from "./src/lib/replayValidator";
 import {
   initMantleFromEnv,
   connectMantle,
@@ -1030,6 +1031,107 @@ async function startServer() {
       res.json(result);
     } catch (error: any) {
       res.status(500).json({ error: error.message });
+    }
+  });
+
+  // ── Replay validator ────────────────────────────────────────────────────────
+
+  // POST /api/replay/validate — replay a live trade against historical simulation
+  app.post("/api/replay/validate", express.json(), async (req, res) => {
+    try {
+      const { tradeId } = req.body;
+      if (!tradeId) return res.status(400).json({ error: "tradeId required" });
+
+      // Fetch the trade
+      const { data: trade, error } = await supabase
+        .from('trades')
+        .select('id, symbol, direction, entry, sl_init, sl, tp, exit_price, r, opened_at, closed_at, be_armed')
+        .eq('id', tradeId)
+        .maybeSingle();
+
+      if (error) return res.status(500).json({ error: error.message });
+      if (!trade) return res.status(404).json({ error: "Trade not found" });
+
+      // Fetch historical candles around the trade
+      const tradeMs = new Date(trade.opened_at).getTime();
+      const fromMs = tradeMs - 24 * 60 * 60 * 1000; // 1 day before
+      const toMs = trade.closed_at
+        ? new Date(trade.closed_at).getTime() + 12 * 60 * 60 * 1000 // 12h after close
+        : Date.now();
+
+      let symbol = trade.symbol;
+      if (!symbol.includes('/')) symbol = `${symbol}/USDT`;
+      // Use spot symbol for OHLCV (works for both spot and swap)
+      const ohlcvSymbol = symbol.includes(':') ? symbol.split(':')[0] : symbol;
+
+      const ccxtLimit = Math.min(5000, Math.ceil((toMs - fromMs) / (5 * 60 * 1000)) + 500);
+      const ohlcv = await exchange.fetchOHLCV(ohlcvSymbol, '5m', fromMs, ccxtLimit);
+
+      const candles = ohlcv.map((c: any) => ({
+        time: c[0],
+        open: c[1],
+        high: c[2],
+        low: c[3],
+        close: c[4],
+        volume: c[5],
+      }));
+
+      const comparison = await replayTrade(trade, candles, 2.0);
+      res.json(comparison);
+    } catch (err: any) {
+      console.error('/api/replay/validate error:', err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/replay/dashboard — replay multiple trades and build dashboard
+  app.post("/api/replay/dashboard", express.json(), async (req, res) => {
+    try {
+      const { userId, limit = 20 } = req.body;
+
+      let query = supabase
+        .from('trades')
+        .select('id, symbol, direction, entry, sl_init, sl, tp, exit_price, r, opened_at, closed_at, be_armed')
+        .in('status', ['closed', 'open'])
+        .order('opened_at', { ascending: false })
+        .limit(limit);
+
+      if (userId) query = query.eq('user_id', userId);
+
+      const { data: trades, error } = await query;
+      if (error) return res.status(500).json({ error: error.message });
+      if (!trades || trades.length === 0) return res.json({ error: "No trades found" });
+
+      const comparisons = [];
+      for (const trade of trades) {
+        try {
+          const tradeMs = new Date(trade.opened_at).getTime();
+          const fromMs = tradeMs - 24 * 60 * 60 * 1000;
+          const toMs = trade.closed_at
+            ? new Date(trade.closed_at).getTime() + 12 * 60 * 60 * 1000
+            : Date.now() + 24 * 60 * 60 * 1000;
+
+          let symbol = trade.symbol;
+          if (!symbol.includes('/')) symbol = `${symbol}/USDT`;
+          const ohlcvSymbol = symbol.includes(':') ? symbol.split(':')[0] : symbol;
+          const ccxtLimit = Math.min(5000, Math.ceil((toMs - fromMs) / (5 * 60 * 1000)) + 500);
+          const ohlcv = await exchange.fetchOHLCV(ohlcvSymbol, '5m', fromMs, ccxtLimit);
+          const candles = ohlcv.map((c: any) => ({
+            time: c[0], open: c[1], high: c[2], low: c[3], close: c[4], volume: c[5],
+          }));
+
+          const cmp = await replayTrade(trade, candles, 2.0);
+          comparisons.push(cmp);
+        } catch (tradeErr: any) {
+          console.error(`Replay failed for trade ${trade.id}:`, tradeErr.message);
+        }
+      }
+
+      const dashboard = buildDashboard(comparisons);
+      res.json(dashboard);
+    } catch (err: any) {
+      console.error('/api/replay/dashboard error:', err.message);
+      res.status(500).json({ error: err.message });
     }
   });
 

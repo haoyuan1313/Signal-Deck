@@ -2,7 +2,7 @@ import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-do
 import { useRealtime } from './hooks/useRealtime';
 import { useUser } from './hooks/useUser';
 import { useStore } from './store/useStore';
-import { LayoutDashboard, History, Zap, Settings, Menu, X, Clock, Power, Bot, FlaskConical } from 'lucide-react';
+import { LayoutDashboard, History, Zap, Settings, Menu, X, Clock, Power, Bot, FlaskConical, ShieldCheck } from 'lucide-react';
 import { useState, useEffect, ReactNode } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
@@ -16,6 +16,7 @@ import AgentIdentity from './pages/AgentIdentity';
 import StrategyLab from './pages/StrategyLab';
 import TradeHistory from './pages/TradeHistory';
 import Config from './pages/Config';
+import ReplayValidator from './pages/ReplayValidator';
 
 
 function PageWrapper({ children }: { children: ReactNode }) {
@@ -139,6 +140,7 @@ function AppInner() {
 
             <div className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest px-4 mb-2 mt-6 opacity-50">Operations</div>
             <NavItem to="/lab" icon={FlaskConical} label="Strategy Lab" onClick={() => setIsMobileMenuOpen(false)} />
+            <NavItem to="/replay" icon={ShieldCheck} label="Replay Validator" onClick={() => setIsMobileMenuOpen(false)} />
             <NavItem to="/trades" icon={History} label="Trade History" onClick={() => setIsMobileMenuOpen(false)} />
 
             <div className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest px-4 mb-2 mt-6 opacity-50">System</div>
@@ -215,6 +217,7 @@ function AppInner() {
                 <Route path="/" element={<PageWrapper><CommandCenter /></PageWrapper>} />
                 <Route path="/agent" element={<PageWrapper><AgentIdentity /></PageWrapper>} />
                 <Route path="/lab" element={<PageWrapper><StrategyLab /></PageWrapper>} />
+                <Route path="/replay" element={<PageWrapper><ReplayValidator /></PageWrapper>} />
                 <Route path="/trades" element={<PageWrapper><TradeHistory /></PageWrapper>} />
                 <Route path="/settings" element={<PageWrapper><Config /></PageWrapper>} />
               </Routes>
