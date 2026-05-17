@@ -175,12 +175,16 @@ function simulateTrades(
       continue;
     }
 
-    const entryPrice = setup.price || data[i].close;
+    // Use the next bar's open as the simulated fill price (mirrors live bot's
+    // ticker-based execution, which always differs from the signal bar close).
+    const fillBar    = data[Math.min(i + 1, data.length - 1)];
+    const fillPrice  = fillBar.open; // realistic fill — not the signal bar close
     const sl         = setup.sl as number;
-    const tp         = setup.tp as number;
-    const risk       = Math.abs(entryPrice - sl);
+    const rr         = (setup.rr as number) || 2.0;
+    const risk       = Math.abs(fillPrice - sl);       // actual risk from fill, same as live bot's actualRisk
+    const tp         = fillPrice + (risk * rr * (setup.direction === 'long' ? 1 : -1)); // same formula as live bot
 
-    if (risk === 0 || risk < entryPrice * MIN_RISK_PRICE_PERCENT) {
+    if (risk === 0 || risk < fillPrice * MIN_RISK_PRICE_PERCENT) {
       equityCurve.push(balance);
       continue;
     }
@@ -202,16 +206,16 @@ function simulateTrades(
       const elapsedMins   = (candle.time - data[i].time) / 60000;
       const currentProfitR =
         setup.direction === 'long'
-          ? (candle.close - entryPrice) / risk
-          : (entryPrice - candle.close) / risk;
+          ? (candle.close - fillPrice) / risk
+          : (fillPrice - candle.close) / risk;
 
       // UPGRADE: trailing stop — mirrors botEngine TRAIL_LEVELS exactly
       if (enableTrailingStop) {
         for (const level of TRAIL_LEVELS) {
           if (currentProfitR >= level.atR) {
             const trailPrice = setup.direction === 'long'
-              ? entryPrice + risk * level.lockR
-              : entryPrice - risk * level.lockR;
+              ? fillPrice + risk * level.lockR
+              : fillPrice - risk * level.lockR;
             if (setup.direction === 'long'  && trailPrice > currentSl) currentSl = trailPrice;
             if (setup.direction === 'short' && trailPrice < currentSl) currentSl = trailPrice;
           }
@@ -220,24 +224,24 @@ function simulateTrades(
 
       // Break-even
       if (!hitBE && currentProfitR >= 1.0) {
-        if (setup.direction === 'long'  && entryPrice > currentSl) currentSl = entryPrice;
-        if (setup.direction === 'short' && entryPrice < currentSl) currentSl = entryPrice;
+        if (setup.direction === 'long'  && fillPrice > currentSl) currentSl = fillPrice;
+        if (setup.direction === 'short' && fillPrice < currentSl) currentSl = fillPrice;
         hitBE = true;
       }
 
       // Hard timeout
       if (elapsedMins >= HARD_TIMEOUT_MINUTES) {
         exitPrice  = candle.close;
-        result     = (setup.direction === 'long' && exitPrice > entryPrice) ||
-                     (setup.direction === 'short' && exitPrice < entryPrice) ? 'win' : 'loss';
+        result     = (setup.direction === 'long' && exitPrice > fillPrice) ||
+                     (setup.direction === 'short' && exitPrice < fillPrice) ? 'win' : 'loss';
         exitTime   = candle.time; exitIndex = j; exitReason = 'Time Expiry'; break;
       }
 
       // Stagnation exit
       if (elapsedMins >= STAGNATION_MINUTES && currentProfitR < STAGNATION_R_THRESHOLD) {
         exitPrice  = candle.close;
-        result     = (setup.direction === 'long' && exitPrice > entryPrice) ||
-                     (setup.direction === 'short' && exitPrice < entryPrice) ? 'win' : 'loss';
+        result     = (setup.direction === 'long' && exitPrice > fillPrice) ||
+                     (setup.direction === 'short' && exitPrice < fillPrice) ? 'win' : 'loss';
         exitTime   = candle.time; exitIndex = j; exitReason = 'Stagnation'; break;
       }
 
@@ -254,8 +258,8 @@ function simulateTrades(
     if (result === 'open') { equityCurve.push(balance); continue; }
 
     const actualR    = setup.direction === 'long'
-      ? (exitPrice - entryPrice) / risk
-      : (entryPrice - exitPrice) / risk;
+      ? (exitPrice - fillPrice) / risk
+      : (fillPrice - exitPrice) / risk;
     const riskAmount = balance * (riskPercent / 100);
     const pnl        = riskAmount * actualR;
 
@@ -265,7 +269,7 @@ function simulateTrades(
     trades.push({
       type:       setup.direction,
       entryTime:  data[i].time,
-      entryPrice,
+      entryPrice: fillPrice,
       sl, tp,
       exitTime, exitPrice,
       result, pnl,
