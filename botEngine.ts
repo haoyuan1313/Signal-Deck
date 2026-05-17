@@ -505,17 +505,11 @@ Return ONLY valid JSON — no markdown, no explanation outside JSON:
     }
 
     const sl          = setup.sl!;
-    const actualRisk  = Math.abs(curPrice - sl);
-    if (actualRisk < curPrice * 0.001) {
-      await this.logStatus(`SKIPPED ${symbol}: Risk too small`, 'info');
-      return;
-    }
+    const tp          = setup.tp!;
+    const rr          = setup.rr || this.settings?.rr || 2.0;
 
-    const rr = setup.rr || this.settings?.rr || 2.0;
-    const tp = curPrice + (actualRisk * rr * (direction === 'long' ? 1 : -1));
-
-    const isAlreadyPastTarget = direction === 'long' ? curPrice >= setup.tp! : curPrice <= setup.tp!;
-    const isAlreadyPastSL     = direction === 'long' ? curPrice <= sl       : curPrice >= sl;
+    const isAlreadyPastTarget = direction === 'long' ? curPrice >= tp : curPrice <= tp;
+    const isAlreadyPastSL     = direction === 'long' ? curPrice <= sl : curPrice >= sl;
 
     if (isAlreadyPastTarget || isAlreadyPastSL) {
       await this.logStatus(`SKIPPED ${symbol}: Already past TP or SL`, 'info');
@@ -564,6 +558,7 @@ Return ONLY valid JSON — no markdown, no explanation outside JSON:
     }
 
     // Calculate risk in USDT for the record
+    const actualRisk = Math.abs(curPrice - sl); // price distance from fill to SL
     const riskPercent = this.settings?.risk_percent ?? 1.0;
     let riskUsdt = 0;
     try {
