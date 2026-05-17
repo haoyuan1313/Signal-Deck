@@ -1076,7 +1076,8 @@ async function startServer() {
         volume: c[5],
       }));
 
-      const comparison = await replayTrade(trade, candles, 2.0);
+      const resolvedSymbol = ohlcvSymbol;
+      const comparison = await replayTrade(trade, candles, resolvedSymbol);
       res.json(comparison);
     } catch (err: any) {
       console.error('/api/replay/validate error:', err.message);
@@ -1120,7 +1121,7 @@ async function startServer() {
             time: c[0], open: c[1], high: c[2], low: c[3], close: c[4], volume: c[5],
           }));
 
-          const cmp = await replayTrade(trade, candles, 2.0);
+          const cmp = await replayTrade(trade, candles, ohlcvSymbol);
           comparisons.push(cmp);
         } catch (tradeErr: any) {
           console.error(`Replay failed for trade ${trade.id}:`, tradeErr.message);
