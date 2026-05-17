@@ -69,8 +69,8 @@ const HARD_TIMEOUT_MINUTES   = 150;
 const STAGNATION_MINUTES     = 75;
 const STAGNATION_R_THRESHOLD = 0.5;
 
-// Mirror botEngine trailing stop levels exactly
-const TRAIL_LEVELS = [
+// Trailing stop levels — keep in sync between backtester and live bot
+export const TRAIL_LEVELS = [
   { atR: 2.0, lockR: 1.0 },
   { atR: 3.0, lockR: 2.0 },
 ];

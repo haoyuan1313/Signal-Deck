@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import { detectSMCSetup, OHLCV, StrategySetup, calcATR, calcEMA, getHTFTrend, SMCOptions, DEFAULT_ALLOWED_SESSIONS } from './src/lib/strategy';
 import { MAX_OPEN_POSITIONS, DAILY_LOSS_HALT_PCT } from './src/lib/constants';
 import { logDecisionOnChain, fireAndForget, processRetryQueue, getOnChainPerformance } from './src/lib/mantle';
+import { TRAIL_LEVELS } from './src/lib/backtester';
 
 dotenv.config();
 
@@ -664,7 +665,26 @@ Return ONLY valid JSON — no markdown, no explanation outside JSON:
 
         // Break even
         if (pnl_r >= 1.0 && !trade.be_armed) {
+          trade.sl = trade.entry;
+          trade.be_armed = true;
           await sb.from('trades').update({ sl: trade.entry, be_armed: true }).eq('id', trade.id);
+        }
+
+        // Trailing stop — mirrors backtester TRAIL_LEVELS exactly
+        for (const level of TRAIL_LEVELS) {
+          if (pnl_r >= level.atR) {
+            const trailPrice = trade.direction === 'long'
+              ? trade.entry + riskAmt * level.lockR
+              : trade.entry - riskAmt * level.lockR;
+            const slImproved = trade.direction === 'long'
+              ? trailPrice > trade.sl
+              : trailPrice < trade.sl;
+            if (slImproved) {
+              trade.sl = trailPrice;
+              await sb.from('trades').update({ sl: trailPrice }).eq('id', trade.id);
+              this.logStatus(`TRAIL ${trade.symbol}: SL → ${trailPrice.toFixed(6)} (${level.lockR}R locked)`, 'accept');
+            }
+          }
         }
 
         const elapsedMins  = (Date.now() - new Date(trade.opened_at).getTime()) / 60000;
