@@ -1,4 +1,4 @@
-import { Candle, Trade as BacktestTrade, TRAIL_LEVELS } from './backtester';
+import { Candle, TRAIL_LEVELS } from './backtester';
 import { detectSMCSetup, OHLCV, StrategySetup, SMCOptions } from './strategy';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -19,6 +19,8 @@ export interface ReplayComparison {
   symbol: string;
   openedAt: string;
   closedAt: string | null;
+  isPaper: boolean;
+  exclusionReason: string | null; // null = valid, non-null = excluded from metrics
   debug: DebugInfo;
 
   signal: {
@@ -75,18 +77,26 @@ export interface ReplayComparison {
 
 export interface ValidationFlag {
   severity: 'low' | 'medium' | 'high';
-  category: 'strategy_mismatch' | 'execution_drift' | 'replay_data_bug' | 'missing_candle_data';
+  category: 'strategy_mismatch' | 'execution_drift' | 'replay_data_bug' | 'missing_candle_data' | 'stale_or_wrong_market_data';
   message: string;
 }
 
 export interface ReplayDashboard {
+  // All trades
   tradesAnalyzed: number;
+
+  // Valid trades only
+  validComparisons: ReplayComparison[];
+  validCount: number;
   avgAccuracy: number;
   avgExecutionDrift: number;
   liveExpectancy: number;
   replayExpectancy: number;
   flagsByCategory: Record<string, number>;
-  comparisons: ReplayComparison[];
+
+  // Excluded trades
+  excludedComparisons: ReplayComparison[];
+  excludedCount: number;
 }
 
 // ── Constants ──────────────────────────────────────────────────────────────────
@@ -95,7 +105,62 @@ const HARD_TIMEOUT_MINUTES = 150;
 const STAGNATION_MINUTES = 75;
 const STAGNATION_R_THRESHOLD = 0.5;
 const FIVE_MIN_MS = 5 * 60 * 1000;
-const SIGNAL_SEARCH_RANGE = 3; // ±3 bars around estimated signal
+const NINETY_MIN_MS = 90 * 60 * 1000;
+const ENTRY_CANDLE_RANGE_PCT = 2.0; // ±2% from nearby candle high/low is acceptable
+
+// ── Data sanity pre-check ──────────────────────────────────────────────────────
+
+function checkDataSanity(
+  trade: { entry: number; opened_at: string },
+  candles: Candle[],
+): { ok: boolean; reason: string } {
+  const openedAtMs = new Date(trade.opened_at).getTime();
+  const roundedOpenMs = Math.floor(openedAtMs / FIVE_MIN_MS) * FIVE_MIN_MS;
+
+  // Find the candle covering the entry time
+  let entryCandleIndex = -1;
+  for (let i = 0; i < candles.length; i++) {
+    if (candles[i].time === roundedOpenMs) {
+      entryCandleIndex = i;
+      break;
+    }
+  }
+  if (entryCandleIndex < 0) {
+    for (let i = 0; i < candles.length; i++) {
+      if (candles[i].time >= roundedOpenMs) {
+        entryCandleIndex = i;
+        break;
+      }
+    }
+  }
+
+  if (entryCandleIndex < 0) {
+    return { ok: false, reason: 'No candle found at or after entry time' };
+  }
+
+  // Check entry price against nearby candles (±2 bars)
+  const nearbyStart = Math.max(0, entryCandleIndex - 2);
+  const nearbyEnd = Math.min(candles.length - 1, entryCandleIndex + 2);
+  let nearbyHigh = -Infinity;
+  let nearbyLow = Infinity;
+  for (let j = nearbyStart; j <= nearbyEnd; j++) {
+    if (candles[j].high > nearbyHigh) nearbyHigh = candles[j].high;
+    if (candles[j].low < nearbyLow) nearbyLow = candles[j].low;
+  }
+
+  const entryWithinRange =
+    trade.entry >= nearbyLow * (1 - ENTRY_CANDLE_RANGE_PCT / 100) &&
+    trade.entry <= nearbyHigh * (1 + ENTRY_CANDLE_RANGE_PCT / 100);
+
+  if (!entryWithinRange) {
+    return {
+      ok: false,
+      reason: `Entry $${trade.entry.toFixed(2)} outside candle range $${nearbyLow.toFixed(2)}–$${nearbyHigh.toFixed(2)} (±2%). Likely testnet/synthetic trade vs different market data.`,
+    };
+  }
+
+  return { ok: true, reason: '' };
+}
 
 // ── Core replay engine ─────────────────────────────────────────────────────────
 
@@ -113,59 +178,70 @@ export async function replayTrade(
     opened_at: string;
     closed_at: string | null;
     be_armed: boolean;
+    is_paper?: boolean;
   },
   candles: Candle[],
   resolvedSymbol: string,
 ): Promise<ReplayComparison> {
   const flags: ValidationFlag[] = [];
+  const isPaper = trade.is_paper ?? false;
+
+  // ── Pre-check: data sanity ──────────────────────────────────────────────────
+  const sanity = checkDataSanity(trade, candles);
+  let exclusionReason: string | null = null;
+
+  if (!sanity.ok) {
+    exclusionReason = sanity.reason;
+    flags.push({
+      severity: 'high',
+      category: 'stale_or_wrong_market_data',
+      message: sanity.reason,
+    });
+  }
 
   // ── 0. Normalize timestamps to UTC 5m grid ──────────────────────────────────
   const openedAtMs = new Date(trade.opened_at).getTime();
-  // Round down to nearest 5m candle boundary
   const roundedOpenMs = Math.floor(openedAtMs / FIVE_MIN_MS) * FIVE_MIN_MS;
   const candleTimeDeltaMs = openedAtMs - roundedOpenMs;
 
-  // Find the candle index at the rounded-open time
-  let signalBarEstimate = -1;
+  // Find the candle covering the entry time
+  let entryCandleIndex = -1;
   for (let i = 0; i < candles.length; i++) {
     if (candles[i].time >= roundedOpenMs) {
-      signalBarEstimate = i - 1; // signal bar is the candle BEFORE the entry candle
+      entryCandleIndex = i;
       break;
     }
   }
+  if (entryCandleIndex < 0) entryCandleIndex = candles.length - 1;
 
-  // If no candle found or too early, use the closest
-  if (signalBarEstimate < 300) {
-    // Find the candle closest to opened_at
-    let bestIdx = 0;
-    let bestDist = Infinity;
-    for (let i = 300; i < candles.length; i++) {
-      const dist = Math.abs(candles[i].time - roundedOpenMs);
-      if (dist < bestDist) { bestDist = dist; bestIdx = i; }
-    }
-    signalBarEstimate = Math.max(300, bestIdx - 1);
+  // ── 1. Signal search: ONLY bars before entry time ────────────────────────────
+  // Signal must be detected on a candle that closes BEFORE the trade opened.
+  // Search from opened_at - 90 min to the bar just before entry (inclusive).
+  const searchEndBar = Math.max(300, entryCandleIndex - 1);
+  const searchStartMs = openedAtMs - NINETY_MIN_MS;
+  let searchStartBar = searchEndBar;
+  for (let i = searchEndBar; i >= 300; i--) {
+    if (candles[i].time < searchStartMs) { searchStartBar = i + 1; break; }
+    searchStartBar = i;
   }
+  searchStartBar = Math.max(300, searchStartBar);
 
-  // ── 1. Search ±3 bars for best matching setup ───────────────────────────────
-  const searchStart = Math.max(300, signalBarEstimate - SIGNAL_SEARCH_RANGE);
-  const searchEnd = Math.min(candles.length - 1, signalBarEstimate + SIGNAL_SEARCH_RANGE);
-
+  const barsAroundSignal: DebugInfo['barsAroundSignal'] = [];
   let bestSetup: StrategySetup | null = null;
   let bestSetupIndex = -1;
   let bestSetupPrice = 0;
   let bestDirectionMatch = false;
   let bestPriceDist = Infinity;
 
-  const barsAroundSignal: DebugInfo['barsAroundSignal'] = [];
+  for (let barIdx = searchStartBar; barIdx <= searchEndBar; barIdx++) {
+    if (candles[barIdx].time >= openedAtMs) break; // never use a bar after trade opened
 
-  for (let barIdx = searchStart; barIdx <= searchEnd; barIdx++) {
     const barTime = new Date(candles[barIdx].time);
     const htf1h = buildHTF(candles, barIdx, 12);
     const htf4h = buildHTF(candles, barIdx, 48);
 
     const smc: SMCOptions = {
-      rr: 2.0,
-      atrPeriod: 14,
+      rr: 2.0, atrPeriod: 14,
       allowedSessions: ['asian', 'london', 'ny_am', 'ny_pm', 'late'],
       require4hAlign: false,
       currentTimeUTC: barTime,
@@ -174,12 +250,17 @@ export async function replayTrade(
     const ltf = candles.slice(Math.max(0, barIdx - 499), barIdx + 1);
     const setup = detectSMCSetup(ltf, htf1h, htf4h, smc);
 
-    barsAroundSignal.push({
-      index: barIdx,
-      time: new Date(candles[barIdx].time).toISOString(),
-      open: candles[barIdx].open,
-      close: candles[barIdx].close,
-    });
+    // Log first and last few bars for debug
+    if (barIdx === searchStartBar || barIdx === searchEndBar ||
+        barIdx === searchStartBar + 1 || barIdx === searchEndBar - 1 ||
+        (setup.reason === 'accepted' && setup.direction)) {
+      barsAroundSignal.push({
+        index: barIdx,
+        time: new Date(candles[barIdx].time).toISOString(),
+        open: candles[barIdx].open,
+        close: candles[barIdx].close,
+      });
+    }
 
     if (setup.reason !== 'accepted' || !setup.direction) continue;
     if (!setup.price) continue;
@@ -187,7 +268,6 @@ export async function replayTrade(
     const dirMatch = setup.direction === trade.direction;
     const priceDist = Math.abs(setup.price - trade.entry) / trade.entry;
 
-    // Prefer direction match, then closest entry price
     if (bestSetup === null || (dirMatch && !bestDirectionMatch) ||
         (dirMatch === bestDirectionMatch && priceDist < bestPriceDist)) {
       bestSetup = setup;
@@ -198,8 +278,18 @@ export async function replayTrade(
     }
   }
 
-  // Fallback: use the estimate
-  const replaySignalBarIndex = bestSetup ? bestSetupIndex : signalBarEstimate;
+  // If no setup found in proper search range, still log the entry bar for debug
+  if (barsAroundSignal.length === 0) {
+    barsAroundSignal.push({
+      index: entryCandleIndex,
+      time: candles[Math.min(entryCandleIndex, candles.length - 1)]
+        ? new Date(candles[Math.min(entryCandleIndex, candles.length - 1)].time).toISOString() : '?',
+      open: candles[Math.min(entryCandleIndex, candles.length - 1)]?.open ?? 0,
+      close: candles[Math.min(entryCandleIndex, candles.length - 1)]?.close ?? 0,
+    });
+  }
+
+  const replaySignalBarIndex = bestSetup ? bestSetupIndex : Math.max(300, entryCandleIndex - 1);
   const signalMatched = bestSetup !== null && bestSetup.direction === trade.direction;
 
   // ── 2. Determine replay entry ───────────────────────────────────────────────
@@ -224,90 +314,80 @@ export async function replayTrade(
     barsAroundSignal,
   };
 
-  // ── 4. Check for data quality issues ────────────────────────────────────────
+  // ── 4. Data quality checks ──────────────────────────────────────────────────
   if (candles.length < 300) {
     flags.push({ severity: 'high', category: 'missing_candle_data',
-      message: `Only ${candles.length} candles available (need ≥300). Fetch larger range.` });
+      message: `Only ${candles.length} candles available (need ≥300).` });
   }
 
   if (Math.abs(candleTimeDeltaMs) > FIVE_MIN_MS * 2) {
-    flags.push({ severity: 'high', category: 'replay_data_bug',
-      message: `Trade opened_at (${trade.opened_at}) is ${(candleTimeDeltaMs / 1000).toFixed(0)}s from nearest 5m candle grid. Data may be misaligned.` });
+    flags.push({ severity: 'medium', category: 'replay_data_bug',
+      message: `Trade opened_at (${trade.opened_at}) is ${(candleTimeDeltaMs / 1000).toFixed(0)}s from nearest 5m candle grid.` });
   }
 
-  if (bestSetup === null) {
-    flags.push({ severity: 'medium', category: 'strategy_mismatch',
-      message: `No accepted setup found in ±${SIGNAL_SEARCH_RANGE} bars around signal. Strategy may not have triggered here.` });
-  }
-
-  // ── 5. Simulate trade management candle-by-candle ────────────────────────────
-  let currentSl = replaySl;
-  let hitBE = false;
-  let trailUpdates = 0;
+  // ── 5. Simulate trade management (skip if excluded) ──────────────────────────
   let replayExitPrice: number | null = null;
   let replayExitReason = 'open';
+  let hitBE = false;
+  let trailUpdates = 0;
+  let currentSl = replaySl;
   let pendingSl: number | null = null;
 
-  for (let j = entryBarIndex + 1; j < candles.length; j++) {
-    const candle = candles[j];
-    const elapsedMins = (candle.time - candles[entryBarIndex].time) / 60000;
-    const currentProfitR = trade.direction === 'long'
-      ? (candle.close - replayEntryPrice) / risk
-      : (replayEntryPrice - candle.close) / risk;
+  if (!exclusionReason) {
+    for (let j = entryBarIndex + 1; j < candles.length; j++) {
+      const candle = candles[j];
+      const elapsedMins = (candle.time - candles[entryBarIndex].time) / 60000;
+      const currentProfitR = trade.direction === 'long'
+        ? (candle.close - replayEntryPrice) / risk
+        : (replayEntryPrice - candle.close) / risk;
 
-    // Apply pending SL from previous bar
-    if (pendingSl !== null) {
-      if (trade.direction === 'long' && pendingSl > currentSl) currentSl = pendingSl;
-      if (trade.direction === 'short' && pendingSl < currentSl) currentSl = pendingSl;
-      pendingSl = null;
-    }
-
-    // Trailing stop
-    for (const level of TRAIL_LEVELS) {
-      if (currentProfitR >= level.atR) {
-        const trailPrice = trade.direction === 'long'
-          ? replayEntryPrice + risk * level.lockR
-          : replayEntryPrice - risk * level.lockR;
-        const improved = trade.direction === 'long' ? trailPrice > currentSl : trailPrice < currentSl;
-        if (improved) { pendingSl = trailPrice; trailUpdates++; }
+      if (pendingSl !== null) {
+        if (trade.direction === 'long' && pendingSl > currentSl) currentSl = pendingSl;
+        if (trade.direction === 'short' && pendingSl < currentSl) currentSl = pendingSl;
+        pendingSl = null;
       }
-    }
 
-    // Break-even
-    if (!hitBE && currentProfitR >= 1.0) {
-      const improved = trade.direction === 'long' ? replayEntryPrice > currentSl : replayEntryPrice < currentSl;
-      if (improved) { pendingSl = replayEntryPrice; hitBE = true; trailUpdates++; }
-    }
+      for (const level of TRAIL_LEVELS) {
+        if (currentProfitR >= level.atR) {
+          const trailPrice = trade.direction === 'long'
+            ? replayEntryPrice + risk * level.lockR
+            : replayEntryPrice - risk * level.lockR;
+          const improved = trade.direction === 'long' ? trailPrice > currentSl : trailPrice < currentSl;
+          if (improved) { pendingSl = trailPrice; trailUpdates++; }
+        }
+      }
 
-    // Hard timeout
-    if (elapsedMins >= HARD_TIMEOUT_MINUTES) {
-      replayExitPrice = candle.close; replayExitReason = 'Time Expiry'; break;
-    }
+      if (!hitBE && currentProfitR >= 1.0) {
+        const improved = trade.direction === 'long' ? replayEntryPrice > currentSl : replayEntryPrice < currentSl;
+        if (improved) { pendingSl = replayEntryPrice; hitBE = true; trailUpdates++; }
+      }
 
-    // Stagnation
-    if (elapsedMins >= STAGNATION_MINUTES && currentProfitR < STAGNATION_R_THRESHOLD) {
-      replayExitPrice = candle.close; replayExitReason = 'Stagnation'; break;
-    }
+      if (elapsedMins >= HARD_TIMEOUT_MINUTES) {
+        replayExitPrice = candle.close; replayExitReason = 'Time Expiry'; break;
+      }
+      if (elapsedMins >= STAGNATION_MINUTES && currentProfitR < STAGNATION_R_THRESHOLD) {
+        replayExitPrice = candle.close; replayExitReason = 'Stagnation'; break;
+      }
 
-    // SL / TP with conservative intrabar
-    if (trade.direction === 'long') {
-      const slHit = candle.low <= currentSl;
-      const tpHit = candle.high >= replayTp;
-      if (slHit && tpHit) { replayExitPrice = currentSl; replayExitReason = hitBE ? 'BE' : 'SL'; break; }
-      if (slHit) { replayExitPrice = currentSl; replayExitReason = hitBE ? 'BE' : 'SL'; break; }
-      if (tpHit) { replayExitPrice = replayTp; replayExitReason = 'TP'; break; }
-    } else {
-      const slHit = candle.high >= currentSl;
-      const tpHit = candle.low <= replayTp;
-      if (slHit && tpHit) { replayExitPrice = currentSl; replayExitReason = hitBE ? 'BE' : 'SL'; break; }
-      if (slHit) { replayExitPrice = currentSl; replayExitReason = hitBE ? 'BE' : 'SL'; break; }
-      if (tpHit) { replayExitPrice = replayTp; replayExitReason = 'TP'; break; }
-    }
+      if (trade.direction === 'long') {
+        const slHit = candle.low <= currentSl;
+        const tpHit = candle.high >= replayTp;
+        if (slHit && tpHit) { replayExitPrice = currentSl; replayExitReason = hitBE ? 'BE' : 'SL'; break; }
+        if (slHit) { replayExitPrice = currentSl; replayExitReason = hitBE ? 'BE' : 'SL'; break; }
+        if (tpHit) { replayExitPrice = replayTp; replayExitReason = 'TP'; break; }
+      } else {
+        const slHit = candle.high >= currentSl;
+        const tpHit = candle.low <= replayTp;
+        if (slHit && tpHit) { replayExitPrice = currentSl; replayExitReason = hitBE ? 'BE' : 'SL'; break; }
+        if (slHit) { replayExitPrice = currentSl; replayExitReason = hitBE ? 'BE' : 'SL'; break; }
+        if (tpHit) { replayExitPrice = replayTp; replayExitReason = 'TP'; break; }
+      }
 
-    if (pendingSl !== null) {
-      if (trade.direction === 'long' && pendingSl > currentSl) currentSl = pendingSl;
-      if (trade.direction === 'short' && pendingSl < currentSl) currentSl = pendingSl;
-      pendingSl = null;
+      if (pendingSl !== null) {
+        if (trade.direction === 'long' && pendingSl > currentSl) currentSl = pendingSl;
+        if (trade.direction === 'short' && pendingSl < currentSl) currentSl = pendingSl;
+        pendingSl = null;
+      }
     }
   }
 
@@ -322,7 +402,6 @@ export async function replayTrade(
   // ── 7. Compute comparisons ──────────────────────────────────────────────────
   const entryDelta = replayEntryPrice - trade.entry;
   const entryDeltaPct = trade.entry > 0 ? (Math.abs(entryDelta) / trade.entry) * 100 : 0;
-
   const slDeltaPct = trade.sl_init > 0 ? (Math.abs(replaySl - trade.sl_init) / trade.sl_init) * 100 : 0;
   const tpDeltaPct = trade.tp > 0 ? (Math.abs(replayTp - trade.tp) / trade.tp) * 100 : 0;
 
@@ -333,83 +412,70 @@ export async function replayTrade(
 
   const replayExitNormalized = normalizeExitReason(replayExitReason);
   const liveExitNormalized = trade.r !== null
-    ? (trade.r > 0.5 ? 'TP' : trade.r < -0.5 ? 'SL' : trade.r === 0 ? 'BE' : 'Stagnation')
-    : 'open';
+    ? (trade.r > 0.5 ? 'TP' : trade.r < -0.5 ? 'SL' : trade.r === 0 ? 'BE' : 'Stagnation') : 'open';
   const exitReasonMatched = replayExitNormalized === liveExitNormalized;
 
-  // ── 8. Generate categorised flags ────────────────────────────────────────────
+  // ── 8. Generate flags (only for non-excluded trades) ─────────────────────────
+  if (!exclusionReason) {
+    if (entryDeltaPct > 2.0) {
+      flags.push({ severity: 'high', category: 'replay_data_bug',
+        message: `Entry delta ${entryDeltaPct.toFixed(1)}% (>2%). Live: $${trade.entry.toFixed(2)}, Replay: $${replayEntryPrice.toFixed(2)}` });
+    } else if (entryDeltaPct > 0.5) {
+      flags.push({ severity: 'medium', category: 'execution_drift',
+        message: `Entry drift ${entryDeltaPct.toFixed(2)}%.` });
+    } else if (entryDeltaPct > 0.1) {
+      flags.push({ severity: 'low', category: 'execution_drift',
+        message: `Minor entry drift ${entryDeltaPct.toFixed(2)}%.` });
+    }
 
-  // Entry delta flags
-  if (entryDeltaPct > 2.0) {
-    flags.push({ severity: 'high', category: 'replay_data_bug',
-      message: `Entry delta ${entryDeltaPct.toFixed(1)}% (>2%) — possible replay mismatch. Live: $${trade.entry.toFixed(2)}, Replay: $${replayEntryPrice.toFixed(2)} (candle open at ${entryCandle ? new Date(entryCandle.time).toISOString() : '?'})` });
-  } else if (entryDeltaPct > 0.5) {
-    flags.push({ severity: 'medium', category: 'execution_drift',
-      message: `Entry drift ${entryDeltaPct.toFixed(2)}% — live fill vs candle open.` });
-  } else if (entryDeltaPct > 0.1) {
-    flags.push({ severity: 'low', category: 'execution_drift',
-      message: `Minor entry drift ${entryDeltaPct.toFixed(2)}%.` });
-  }
+    if (!signalMatched && bestSetup) {
+      flags.push({ severity: 'medium', category: 'strategy_mismatch',
+        message: `Direction mismatch: live ${trade.direction}, replay ${bestSetup.direction}` });
+    }
 
-  // Signal mismatch
-  if (!signalMatched && bestSetup) {
-    flags.push({ severity: 'medium', category: 'strategy_mismatch',
-      message: `Direction mismatch: live ${trade.direction}, replay ${bestSetup.direction} at bar ${bestSetupIndex}` });
-  } else if (!bestSetup) {
-    flags.push({ severity: 'medium', category: 'strategy_mismatch',
-      message: `No accepted setup found in ±${SIGNAL_SEARCH_RANGE} bars. Reason: ${bestSetup ? bestSetup.reason : 'none found'}` });
-  }
+    if (tpDeltaPct > 2) {
+      flags.push({ severity: 'medium', category: 'strategy_mismatch',
+        message: `TP differs by ${tpDeltaPct.toFixed(1)}%.` });
+    }
+    if (slDeltaPct > 2) {
+      flags.push({ severity: 'medium', category: 'strategy_mismatch',
+        message: `SL differs by ${slDeltaPct.toFixed(1)}%.` });
+    }
 
-  // TP/SL differences
-  if (tpDeltaPct > 2) {
-    flags.push({ severity: 'medium', category: 'strategy_mismatch',
-      message: `TP differs by ${tpDeltaPct.toFixed(1)}% (live: ${trade.tp.toFixed(4)}, replay: ${replayTp.toFixed(4)})` });
-  }
-  if (slDeltaPct > 2) {
-    flags.push({ severity: 'medium', category: 'strategy_mismatch',
-      message: `SL differs by ${slDeltaPct.toFixed(1)}% (live: ${trade.sl_init.toFixed(4)}, replay: ${replaySl.toFixed(4)})` });
-  }
+    if (!exitReasonMatched && replayExitReason !== 'open') {
+      flags.push({ severity: 'low', category: 'execution_drift',
+        message: `Exit reason: replay ${replayExitReason} vs live ${liveExitNormalized}` });
+    }
 
-  // Exit mismatch
-  if (!exitReasonMatched && replayExitReason !== 'open') {
-    flags.push({ severity: 'low', category: 'execution_drift',
-      message: `Exit reason: replay ${replayExitReason} vs live ${liveExitNormalized}` });
-  }
+    if (trade.be_armed && !hitBE) {
+      flags.push({ severity: 'medium', category: 'execution_drift',
+        message: 'Live reached BE but replay did not.' });
+    }
 
-  // Trail/BE differences
-  if (trade.be_armed && !hitBE) {
-    flags.push({ severity: 'medium', category: 'execution_drift',
-      message: 'Live reached BE but replay did not — price path may differ in replay candles.' });
-  }
-
-  // R divergence
-  if (Math.abs(liveR - replayR) > 0.5) {
-    flags.push({ severity: 'high', category: 'execution_drift',
-      message: `R divergence: live ${liveR.toFixed(2)}R vs replay ${replayR.toFixed(2)}R` });
+    if (Math.abs(liveR - replayR) > 0.5) {
+      flags.push({ severity: 'high', category: 'execution_drift',
+        message: `R divergence: live ${liveR.toFixed(2)}R vs replay ${replayR.toFixed(2)}R` });
+    }
   }
 
   // ── 9. Accuracy score ───────────────────────────────────────────────────────
   let score = 100;
-  if (!bestSetup) score -= 20;
-  if (!signalMatched) score -= 15;
-  if (entryDeltaPct > 2.0) score -= 30;   // >2% means probable replay bug
-  else if (entryDeltaPct > 0.5) score -= Math.min(15, entryDeltaPct * 10);
-  if (!exitReasonMatched) score -= 10;
-  score -= Math.min(15, Math.abs(liveR - replayR) * 15);
-  // Penalize replay bugs specifically
-  const bugFlags = flags.filter(f => f.category === 'replay_data_bug').length;
-  score -= bugFlags * 10;
+  if (exclusionReason) {
+    score = 0; // excluded trades get 0 accuracy
+  } else {
+    if (!bestSetup) score -= 20;
+    if (!signalMatched) score -= 15;
+    if (entryDeltaPct > 2.0) score -= 30;
+    else if (entryDeltaPct > 0.5) score -= Math.min(15, entryDeltaPct * 10);
+    if (!exitReasonMatched) score -= 10;
+    score -= Math.min(15, Math.abs(liveR - replayR) * 15);
+  }
   const accuracyScore = Math.max(0, Math.round(score));
 
-  // ── 10. Execution drift ─────────────────────────────────────────────────────
-  const executionDrift = (entryDeltaPct + (exitPriceDeltaPct || 0)) / 2;
-
   return {
-    tradeId: trade.id,
-    symbol: trade.symbol,
-    openedAt: trade.opened_at,
-    closedAt: trade.closed_at,
-    debug,
+    tradeId: trade.id, symbol: trade.symbol,
+    openedAt: trade.opened_at, closedAt: trade.closed_at,
+    isPaper, exclusionReason, debug,
 
     signal: {
       liveDirection: trade.direction,
@@ -447,8 +513,7 @@ export async function replayTrade(
     },
 
     r: {
-      liveR,
-      replayR: Math.round(replayR * 100) / 100,
+      liveR, replayR: Math.round(replayR * 100) / 100,
       delta: Math.round((liveR - replayR) * 100) / 100,
     },
 
@@ -458,33 +523,38 @@ export async function replayTrade(
       matchedUpdates: (trade.be_armed && hitBE) ? 1 : 0,
     },
 
-    flags,
-    accuracyScore,
-    executionDrift: Math.round(executionDrift * 100) / 100,
+    flags, accuracyScore,
+    executionDrift: Math.round((entryDeltaPct + (exitPriceDeltaPct || 0)) / 2 * 100) / 100,
   };
 }
 
 // ── Dashboard aggregator ───────────────────────────────────────────────────────
 
 export function buildDashboard(comparisons: ReplayComparison[]): ReplayDashboard {
-  const valid = comparisons.filter(c => c.exit.replayExitReason !== 'open' || c.exit.replayExitReason === 'open');
+  const valid = comparisons.filter(c => c.exclusionReason === null);
+  const excluded = comparisons.filter(c => c.exclusionReason !== null);
   const total = comparisons.length;
-  if (total === 0) {
+
+  if (valid.length === 0) {
     return {
-      tradesAnalyzed: 0, avgAccuracy: 0, avgExecutionDrift: 0,
-      liveExpectancy: 0, replayExpectancy: 0, flagsByCategory: {}, comparisons: [],
+      tradesAnalyzed: total,
+      validComparisons: [], validCount: 0,
+      avgAccuracy: 0, avgExecutionDrift: 0,
+      liveExpectancy: 0, replayExpectancy: 0, flagsByCategory: {},
+      excludedComparisons: excluded, excludedCount: excluded.length,
     };
   }
-  const avgAccuracy = comparisons.reduce((s, c) => s + c.accuracyScore, 0) / total;
-  const avgExecutionDrift = comparisons.reduce((s, c) => s + c.executionDrift, 0) / total;
-  const closedWithR = comparisons.filter(c => c.r.liveR !== 0);
-  const liveExpectancy = closedWithR.length > 0
-    ? closedWithR.reduce((s, c) => s + c.r.liveR, 0) / closedWithR.length : 0;
-  const replayExpectancy = closedWithR.length > 0
-    ? closedWithR.reduce((s, c) => s + c.r.replayR, 0) / closedWithR.length : 0;
+
+  const avgAccuracy = valid.reduce((s, c) => s + c.accuracyScore, 0) / valid.length;
+  const avgExecutionDrift = valid.reduce((s, c) => s + c.executionDrift, 0) / valid.length;
+  const closed = valid.filter(c => c.r.liveR !== 0);
+  const liveExpectancy = closed.length > 0
+    ? closed.reduce((s, c) => s + c.r.liveR, 0) / closed.length : 0;
+  const replayExpectancy = closed.length > 0
+    ? closed.reduce((s, c) => s + c.r.replayR, 0) / closed.length : 0;
 
   const flagsByCategory: Record<string, number> = {};
-  for (const c of comparisons) {
+  for (const c of valid) {
     for (const f of c.flags) {
       flagsByCategory[f.category] = (flagsByCategory[f.category] || 0) + 1;
     }
@@ -492,12 +562,13 @@ export function buildDashboard(comparisons: ReplayComparison[]): ReplayDashboard
 
   return {
     tradesAnalyzed: total,
+    validComparisons: valid, validCount: valid.length,
     avgAccuracy: Math.round(avgAccuracy * 10) / 10,
     avgExecutionDrift: Math.round(avgExecutionDrift * 100) / 100,
     liveExpectancy: Math.round(liveExpectancy * 100) / 100,
     replayExpectancy: Math.round(replayExpectancy * 100) / 100,
     flagsByCategory,
-    comparisons,
+    excludedComparisons: excluded, excludedCount: excluded.length,
   };
 }
 
@@ -509,8 +580,7 @@ function buildHTF(candles: Candle[], currentIndex: number, interval: number): OH
     const chunk = candles.slice(i - interval + 1, i + 1);
     if (!chunk.length) continue;
     result.push({
-      time: chunk[0].time,
-      open: chunk[0].open,
+      time: chunk[0].time, open: chunk[0].open,
       high: Math.max(...chunk.map(c => c.high)),
       low: Math.min(...chunk.map(c => c.low)),
       close: chunk[chunk.length - 1].close,

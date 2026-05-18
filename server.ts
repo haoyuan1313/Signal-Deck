@@ -1045,7 +1045,7 @@ async function startServer() {
       // Fetch the trade
       const { data: trade, error } = await supabase
         .from('trades')
-        .select('id, symbol, direction, entry, sl_init, sl, tp, exit_price, r, opened_at, closed_at, be_armed')
+        .select('id, symbol, direction, entry, sl_init, sl, tp, exit_price, r, opened_at, closed_at, be_armed, is_paper')
         .eq('id', tradeId)
         .maybeSingle();
 
@@ -1092,7 +1092,7 @@ async function startServer() {
 
       let query = supabase
         .from('trades')
-        .select('id, symbol, direction, entry, sl_init, sl, tp, exit_price, r, opened_at, closed_at, be_armed')
+        .select('id, symbol, direction, entry, sl_init, sl, tp, exit_price, r, opened_at, closed_at, be_armed, is_paper')
         .in('status', ['closed', 'open'])
         .order('opened_at', { ascending: false })
         .limit(limit);
