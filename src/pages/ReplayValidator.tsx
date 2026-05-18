@@ -180,8 +180,9 @@ export default function ReplayValidatorPage() {
                     <tr className="text-zinc-600 text-[9px] font-black uppercase tracking-[0.2em] bg-zinc-800/20 border-b border-zinc-800/50">
                       <th className="px-3 py-3">Trade</th>
                       <th className="px-3 py-3">Live Time</th>
-                      <th className="px-3 py-3">Sig Bar</th>
-                      <th className="px-3 py-3">Δt</th>
+                      <th className="px-3 py-3">Sig Time</th>
+                      <th className="px-3 py-3">Sig→Entry</th>
+                      <th className="px-3 py-3">EntryΔ</th>
                       <th className="px-3 py-3">Dir</th>
                       <th className="px-3 py-3">Live Entry</th>
                       <th className="px-3 py-3">Replay Entry</th>
@@ -208,6 +209,11 @@ export default function ReplayValidatorPage() {
                           <td className="px-3 py-3 font-bold text-white">{c.symbol}</td>
                           <td className="px-3 py-3 font-mono text-zinc-400 text-[10px]">{c.openedAt.slice(0, 19).replace('T', ' ')}</td>
                           <td className="px-3 py-3 font-mono text-zinc-500 text-[10px]">{c.debug.signalCandleTime.slice(0, 19).replace('T', ' ')}</td>
+                          <td className="px-3 py-3 font-mono">
+                            <span className={c.debug.signalToEntrySec < 0 ? 'text-rose-400 font-bold' : c.debug.signalToEntrySec > 3600 ? 'text-amber-400' : 'text-zinc-400'}>
+                              {c.debug.signalToEntrySec < 0 ? 'FUTURE ' : ''}{Math.abs(c.debug.signalToEntrySec)}s
+                            </span>
+                          </td>
                           <td className="px-3 py-3 font-mono">
                             <span className={Math.abs(c.debug.candleTimeDeltaSec) > 300 ? 'text-rose-400' : 'text-zinc-500'}>
                               {c.debug.candleTimeDeltaSec}s
@@ -286,7 +292,9 @@ export default function ReplayValidatorPage() {
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
                     <DebugRow label="Live opened_at" value={selectedTrade.debug.liveOpenedAt} />
                     <DebugRow label="Signal candle" value={selectedTrade.debug.signalCandleTime} />
-                    <DebugRow label="Candle Δt" value={`${selectedTrade.debug.candleTimeDeltaSec}s`} />
+                    <DebugRow label="Signal→Entry" value={`${selectedTrade.debug.signalToEntrySec}s`} />
+                    <DebugRow label="Entry delay" value={`${selectedTrade.debug.entryDelaySec}s`} />
+                    <DebugRow label="Entry candle Δt" value={`${selectedTrade.debug.candleTimeDeltaSec}s`} />
                     <DebugRow label="Resolved symbol" value={selectedTrade.debug.resolvedSymbol} />
                     <DebugRow label="Candles" value={`${selectedTrade.debug.candleCount}`} />
                     <DebugRow label="Signal bar idx" value={`${selectedTrade.debug.signalBarIndex}`} />

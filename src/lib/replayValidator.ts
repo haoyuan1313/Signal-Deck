@@ -7,6 +7,8 @@ export interface DebugInfo {
   liveOpenedAt: string;
   signalCandleTime: string;
   candleTimeDeltaSec: number;
+  signalToEntrySec: number;
+  entryDelaySec: number;
   resolvedSymbol: string;
   candleCount: number;
   signalBarIndex: number;
@@ -199,32 +201,46 @@ export async function replayTrade(
     });
   }
 
-  // ── 0. Normalize timestamps to UTC 5m grid ──────────────────────────────────
+  // ── 0. Anchor: find the entry candle (closest 5m bar ≤ opened_at) ───────────
   const openedAtMs = new Date(trade.opened_at).getTime();
   const roundedOpenMs = Math.floor(openedAtMs / FIVE_MIN_MS) * FIVE_MIN_MS;
-  const candleTimeDeltaMs = openedAtMs - roundedOpenMs;
 
-  // Find the candle covering the entry time
+  // Find the candle whose time is closest to but NOT AFTER roundedOpenMs.
+  // This is the bar during which the trade was executed.
   let entryCandleIndex = -1;
-  for (let i = 0; i < candles.length; i++) {
-    if (candles[i].time >= roundedOpenMs) {
+  for (let i = candles.length - 1; i >= 0; i--) {
+    if (candles[i].time <= roundedOpenMs) {
       entryCandleIndex = i;
       break;
     }
   }
-  if (entryCandleIndex < 0) entryCandleIndex = candles.length - 1;
-
-  // ── 1. Signal search: ONLY bars before entry time ────────────────────────────
-  // Signal must be detected on a candle that closes BEFORE the trade opened.
-  // Search from opened_at - 90 min to the bar just before entry (inclusive).
-  const searchEndBar = Math.max(300, entryCandleIndex - 1);
-  const searchStartMs = openedAtMs - NINETY_MIN_MS;
-  let searchStartBar = searchEndBar;
-  for (let i = searchEndBar; i >= 300; i--) {
-    if (candles[i].time < searchStartMs) { searchStartBar = i + 1; break; }
-    searchStartBar = i;
+  // If all candles are after entry time, the data starts too late — still use
+  // the first available candle for partial debugging.
+  if (entryCandleIndex < 0 && candles.length > 0) {
+    entryCandleIndex = 0;
   }
-  searchStartBar = Math.max(300, searchStartBar);
+
+  const entryCandleTime = entryCandleIndex >= 0 ? candles[entryCandleIndex].time : 0;
+  const candleTimeDeltaMs = openedAtMs - entryCandleTime;
+
+  // ── 1. Signal search: ONLY bars strictly before opened_at ────────────────────
+  // Search from (opened_at - 90 min) up to the bar whose CLOSE time is < opened_at.
+  // The signal bar must close before the trade opens; otherwise it's future data.
+  const minCandleTime = openedAtMs - NINETY_MIN_MS;
+  const maxSignalTime = openedAtMs; // exclusive — signal must be strictly before entry
+
+  let searchStartBar = Math.max(0, entryCandleIndex - Math.ceil(90 / 5)); // ~18 bars before entry
+  let searchEndBar = entryCandleIndex; // include entry bar itself as upper bound
+
+  // Refine: use exact time bounds
+  for (let i = 0; i < candles.length; i++) {
+    if (candles[i].time >= minCandleTime && searchStartBar > i) searchStartBar = i;
+    if (candles[i].time >= maxSignalTime && searchEndBar > i) searchEndBar = i;
+  }
+  // Clamp to valid range
+  searchStartBar = Math.max(0, Math.min(searchStartBar, candles.length - 1));
+  searchEndBar = Math.max(0, Math.min(searchEndBar, candles.length - 1));
+  if (searchEndBar < searchStartBar) searchEndBar = searchStartBar;
 
   const barsAroundSignal: DebugInfo['barsAroundSignal'] = [];
   let bestSetup: StrategySetup | null = null;
@@ -232,9 +248,11 @@ export async function replayTrade(
   let bestSetupPrice = 0;
   let bestDirectionMatch = false;
   let bestPriceDist = Infinity;
+  let futureSignalBug = false;
 
   for (let barIdx = searchStartBar; barIdx <= searchEndBar; barIdx++) {
-    if (candles[barIdx].time >= openedAtMs) break; // never use a bar after trade opened
+    // Hard guard: signal bar time must be < trade opened_at
+    if (candles[barIdx].time >= openedAtMs) break;
 
     const barTime = new Date(candles[barIdx].time);
     const htf1h = buildHTF(candles, barIdx, 12);
@@ -278,35 +296,55 @@ export async function replayTrade(
     }
   }
 
-  // If no setup found in proper search range, still log the entry bar for debug
-  if (barsAroundSignal.length === 0) {
+  // If no setup found in search range, still log the entry bar for debug
+  if (barsAroundSignal.length === 0 && entryCandleIndex >= 0) {
     barsAroundSignal.push({
       index: entryCandleIndex,
-      time: candles[Math.min(entryCandleIndex, candles.length - 1)]
-        ? new Date(candles[Math.min(entryCandleIndex, candles.length - 1)].time).toISOString() : '?',
-      open: candles[Math.min(entryCandleIndex, candles.length - 1)]?.open ?? 0,
-      close: candles[Math.min(entryCandleIndex, candles.length - 1)]?.close ?? 0,
+      time: new Date(candles[entryCandleIndex].time).toISOString(),
+      open: candles[entryCandleIndex].open,
+      close: candles[entryCandleIndex].close,
     });
   }
 
-  const replaySignalBarIndex = bestSetup ? bestSetupIndex : Math.max(300, entryCandleIndex - 1);
+  // ── 2. Validate signal timing ───────────────────────────────────────────────
+  let replaySignalBarIndex = bestSetup ? bestSetupIndex : entryCandleIndex;
+  replaySignalBarIndex = Math.max(0, Math.min(replaySignalBarIndex, candles.length - 1));
+
+  // Check for future signal bug
+  const signalTime = candles[replaySignalBarIndex]?.time ?? 0;
+  if (signalTime >= openedAtMs && replaySignalBarIndex > 0 && candles.length > 0) {
+    // Try to fall back to the bar just before the entry candle
+    const fallbackIdx = Math.max(0, entryCandleIndex - 1);
+    if (fallbackIdx >= 0 && candles[fallbackIdx]?.time < openedAtMs) {
+      replaySignalBarIndex = fallbackIdx;
+    } else {
+      futureSignalBug = true;
+    }
+  }
+
   const signalMatched = bestSetup !== null && bestSetup.direction === trade.direction;
 
-  // ── 2. Determine replay entry ───────────────────────────────────────────────
-  const entryBarIndex = replaySignalBarIndex + 1;
-  const entryCandle = candles[Math.min(entryBarIndex, candles.length - 1)];
+  // ── 3. Determine replay entry ───────────────────────────────────────────────
+  const entryBarIndex = Math.min(replaySignalBarIndex + 1, candles.length - 1);
+  const entryCandle = candles[entryBarIndex];
   const replayEntryPrice = entryCandle?.open ?? trade.entry;
 
   const replaySl = bestSetup?.sl ?? trade.sl_init;
   const replayTp = bestSetup?.tp ?? trade.tp;
   const risk = Math.abs(replayEntryPrice - replaySl) || 1;
 
-  // ── 3. Debug info ───────────────────────────────────────────────────────────
+  // Timing metrics
+  const signalToEntrySec = Math.round((openedAtMs - signalTime) / 1000);
+  const entryDelaySec = Math.round((candles[entryBarIndex]?.time - signalTime) / 1000);
+
+  // ── 4. Debug info ───────────────────────────────────────────────────────────
   const debug: DebugInfo = {
     liveOpenedAt: trade.opened_at,
     signalCandleTime: candles[replaySignalBarIndex]
-      ? new Date(candles[replaySignalBarIndex].time).toISOString() : 'unknown',
+      ? new Date(signalTime).toISOString() : 'unknown',
     candleTimeDeltaSec: Math.round(candleTimeDeltaMs / 1000),
+    signalToEntrySec,
+    entryDelaySec,
     resolvedSymbol,
     candleCount: candles.length,
     signalBarIndex: replaySignalBarIndex,
@@ -314,15 +352,22 @@ export async function replayTrade(
     barsAroundSignal,
   };
 
-  // ── 4. Data quality checks ──────────────────────────────────────────────────
-  if (candles.length < 300) {
+  // ── 5. Data quality checks ──────────────────────────────────────────────────
+  if (candles.length < 100) {
     flags.push({ severity: 'high', category: 'missing_candle_data',
-      message: `Only ${candles.length} candles available (need ≥300).` });
+      message: `Only ${candles.length} candles available (need ≥100).` });
+  }
+
+  if (futureSignalBug) {
+    flags.push({ severity: 'high', category: 'replay_data_bug',
+      message: `Future signal bug: signal candle ${new Date(signalTime).toISOString()} is after trade opened_at ${trade.opened_at}. Excluded from metrics.` });
+    exclusionReason = (exclusionReason ? exclusionReason + '; ' : '') +
+      `future_signal_bug: signal ${new Date(signalTime).toISOString()} ≥ opened ${trade.opened_at}`;
   }
 
   if (Math.abs(candleTimeDeltaMs) > FIVE_MIN_MS * 2) {
-    flags.push({ severity: 'medium', category: 'replay_data_bug',
-      message: `Trade opened_at (${trade.opened_at}) is ${(candleTimeDeltaMs / 1000).toFixed(0)}s from nearest 5m candle grid.` });
+    flags.push({ severity: 'low', category: 'replay_data_bug',
+      message: `Entry candle ${new Date(entryCandleTime).toISOString()} is ${(candleTimeDeltaMs / 1000).toFixed(0)}s from trade time.` });
   }
 
   // ── 5. Simulate trade management (skip if excluded) ──────────────────────────
