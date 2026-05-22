@@ -10,6 +10,7 @@ import {
   MIN_RISK_PRICE_PERCENT,
 } from './strategy';
 import { evaluateFilter, type EdgeFilter, DEFAULT_EDGE_FILTER } from './edgeAnalytics';
+import { checkDisplacementFromCandles, type DisplacementFilterSettings, DEFAULT_DISPLACEMENT_FILTER } from './displacementFilter';
 
 export interface Candle {
   time: number;
@@ -174,6 +175,8 @@ export interface BacktestOptions {
   intrabarMode?:      'conservative' | 'optimistic';
   // ── Edge filter ────────────────────────────────────────────────────────────
   edgeFilter?:        EdgeFilter;
+  // ── Displacement filter ────────────────────────────────────────────────────
+  displacementFilter?: DisplacementFilterSettings;
 }
 
 // ── Core simulation engine ────────────────────────────────────────────────────
@@ -194,8 +197,9 @@ interface SimOptions {
   feePercent:         number;
   slippagePercent:    number;
   intrabarMode:       'conservative' | 'optimistic';
-  edgeFilter?:        EdgeFilter;
-  symbol?:            string;
+  edgeFilter?:         EdgeFilter;
+  displacementFilter?: DisplacementFilterSettings;
+  symbol?:             string;
 }
 
 function simulateTrades(opts: SimOptions): { trades: Trade[]; equityCurve: number[]; finalBalance: number } {
@@ -203,7 +207,7 @@ function simulateTrades(opts: SimOptions): { trades: Trade[]; equityCurve: numbe
     data, htf1h, htf4h, startIndex, endIndex,
     initialBalance, rr, riskPercent, allowedDirections,
     smc, enableTrailingStop, useCompounding, feePercent, slippagePercent, intrabarMode,
-    edgeFilter, symbol: simSymbol,
+    edgeFilter, displacementFilter, symbol: simSymbol,
   } = opts;
 
   let balance = initialBalance;
@@ -247,9 +251,24 @@ function simulateTrades(opts: SimOptions): { trades: Trade[]; equityCurve: numbe
         symbol: simSymbol || 'unknown',
         direction: setup.direction,
         session: setup.session || getUTCSession(barTime.getUTCHours()),
-        aiConfidence: 0, // no AI scoring in backtest
+        aiConfidence: 0,
       });
       if (!filterResult.passed) {
+        equityCurve.push(balance);
+        continue;
+      }
+    }
+
+    // ── Displacement Impulse Filter ──────────────────────────────────────────
+    if (displacementFilter?.enableDisplacementFilter) {
+      const dispCandles = ltf;
+      const dispResult = checkDisplacementFromCandles(
+        dispCandles, setup.direction as 'long' | 'short',
+        null, // backtester doesn't compute HTF trend inline
+        displacementFilter,
+        setup.session,
+      );
+      if (!dispResult.passed) {
         equityCurve.push(balance);
         continue;
       }

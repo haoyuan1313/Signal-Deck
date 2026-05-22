@@ -6,6 +6,7 @@ import { MAX_OPEN_POSITIONS, DAILY_LOSS_HALT_PCT } from './src/lib/constants';
 import { logDecisionOnChain, fireAndForget, processRetryQueue, getOnChainPerformance } from './src/lib/mantle';
 import { TRAIL_LEVELS } from './src/lib/backtester';
 import { evaluateFilter, type EdgeFilter, DEFAULT_EDGE_FILTER } from './src/lib/edgeAnalytics';
+import { checkDisplacementImpulse, type DisplacementFilterSettings, DEFAULT_DISPLACEMENT_FILTER } from './src/lib/displacementFilter';
 
 dotenv.config();
 
@@ -343,7 +344,25 @@ export class SMCBot {
         require4hAlign:  this.settings?.require_4h_align  ?? true,
       };
 
-      return detectSMCSetup(ohlcvLtf, ohlcvHtf, ohlcvHtf2, smc);
+      const setup = detectSMCSetup(ohlcvLtf, ohlcvHtf, ohlcvHtf2, smc);
+
+      // ── Displacement Impulse Filter ────────────────────────────────────
+      if (setup.reason === 'accepted' && setup.direction) {
+        const displacementFilter: DisplacementFilterSettings =
+          this.settings?.displacement_filter || DEFAULT_DISPLACEMENT_FILTER;
+        if (displacementFilter.enableDisplacementFilter) {
+          const htfTrend = getHTFTrend(ohlcvHtf, true);
+          const result = checkDisplacementImpulse(
+            ohlcvLtf, setup.direction as 'long' | 'short',
+            htfTrend, displacementFilter, setup.session,
+          );
+          if (!result.passed) {
+            return { reason: 'no_displacement_impulse' };
+          }
+        }
+      }
+
+      return setup;
     } catch (err) {
       console.error(`Bot [${this.userId}]: detectSetup failed for ${symbol}:`, err);
       return null;
@@ -881,7 +900,7 @@ Return ONLY valid JSON — no markdown, no explanation outside JSON:
             }
 
             const sb = getSupabase();
-            const NOISE = new Set(['no_setup_found', 'no_data', 'insufficient_data', 'no_sweep_detected', 'none', 'session_filter']);
+            const NOISE = new Set(['no_setup_found', 'no_data', 'insufficient_data', 'no_sweep_detected', 'none', 'session_filter', 'no_displacement_impulse']);
             const reason = setup?.reason || 'no_data';
 
             if (sb && !NOISE.has(reason)) {

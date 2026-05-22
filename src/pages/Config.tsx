@@ -30,6 +30,7 @@ export default function Config() {
     allowed_sessions: ['london', 'ny_am', 'ny_pm'] as string[],
     require_4h_align: true,
     edge_filter: { enableEdgeFilter: false, allowedSymbols: [], blockedSymbols: [], allowedSessions: [], allowedDirections: [], minAIConfidence: null, maxAIConfidence: null, requireAIConfidence: false } as any,
+    displacement_filter: { enableDisplacementFilter: false, minDisplacementBodyATR: 1.2, minImpulseRangeATR: 1.5, requireDirectionalClose: true, requireHTFAlignment: false, allowedDisplacementSessions: [] } as any,
   });
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'success'>('idle');
 
@@ -76,6 +77,7 @@ export default function Config() {
         allowed_sessions: settings.allowed_sessions || ['london', 'ny_am', 'ny_pm'],
         require_4h_align: settings.require_4h_align ?? true,
         edge_filter: (settings as any).edge_filter || { enableEdgeFilter: false, allowedSymbols: [], blockedSymbols: [], allowedSessions: [], allowedDirections: [], minAIConfidence: null, maxAIConfidence: null, requireAIConfidence: false },
+        displacement_filter: (settings as any).displacement_filter || { enableDisplacementFilter: false, minDisplacementBodyATR: 1.2, minImpulseRangeATR: 1.5, requireDirectionalClose: true, requireHTFAlignment: false, allowedDisplacementSessions: [] },
       });
     }
   }, [settings]);
@@ -531,6 +533,55 @@ export default function Config() {
                                 <input type="checkbox" checked={formData.edge_filter?.requireAIConfidence || false}
                                   onChange={(e) => setFormData({...formData, edge_filter: {...(formData.edge_filter || {}), requireAIConfidence: e.target.checked}})} />
                                 <span className="text-[9px] font-bold uppercase text-zinc-500 tracking-wider">Require AI Confidence</span>
+                              </label>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* ── Displacement Impulse Filter ──────────────────── */}
+                      <div className="space-y-4 pt-2 border-t border-zinc-800/50">
+                        <div className="flex items-center justify-between">
+                          <label className="text-xs font-bold uppercase text-zinc-500 tracking-wider">Displacement Impulse Filter</label>
+                          <label className="relative inline-flex items-center cursor-pointer">
+                            <input type="checkbox" className="sr-only peer"
+                              checked={formData.displacement_filter?.enableDisplacementFilter || false}
+                              onChange={(e) => setFormData({...formData, displacement_filter: {...(formData.displacement_filter || {}), enableDisplacementFilter: e.target.checked}})} />
+                            <div className="w-9 h-5 bg-zinc-800 rounded-full peer peer-checked:bg-amber-500 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-4"></div>
+                          </label>
+                        </div>
+                        <p className="text-[10px] text-zinc-500 italic">
+                          Only allow trades when displacement impulse is detected (large body, range expansion, directional close). Default: OFF.
+                        </p>
+
+                        {formData.displacement_filter?.enableDisplacementFilter && (
+                          <div className="space-y-3 bg-zinc-800/30 rounded-xl p-4">
+                            <div className="grid grid-cols-2 gap-3">
+                              <div>
+                                <label className="text-[9px] font-bold uppercase text-zinc-500 tracking-wider">Min Body ATR</label>
+                                <input type="number" step="0.1" placeholder="1.2"
+                                  value={formData.displacement_filter?.minDisplacementBodyATR ?? ''}
+                                  onChange={(e) => setFormData({...formData, displacement_filter: {...(formData.displacement_filter || {}), minDisplacementBodyATR: parseFloat(e.target.value) || 1.2}})}
+                                  className="w-full mt-1 px-3 py-1.5 rounded-lg bg-zinc-800 text-[10px] font-bold text-white outline-none" />
+                              </div>
+                              <div>
+                                <label className="text-[9px] font-bold uppercase text-zinc-500 tracking-wider">Min Range ATR</label>
+                                <input type="number" step="0.1" placeholder="1.5"
+                                  value={formData.displacement_filter?.minImpulseRangeATR ?? ''}
+                                  onChange={(e) => setFormData({...formData, displacement_filter: {...(formData.displacement_filter || {}), minImpulseRangeATR: parseFloat(e.target.value) || 1.5}})}
+                                  className="w-full mt-1 px-3 py-1.5 rounded-lg bg-zinc-800 text-[10px] font-bold text-white outline-none" />
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-4">
+                              <label className="flex items-center gap-2 cursor-pointer">
+                                <input type="checkbox" checked={formData.displacement_filter?.requireDirectionalClose ?? true}
+                                  onChange={(e) => setFormData({...formData, displacement_filter: {...(formData.displacement_filter || {}), requireDirectionalClose: e.target.checked}})} />
+                                <span className="text-[9px] font-bold uppercase text-zinc-500 tracking-wider">Require Directional Close</span>
+                              </label>
+                              <label className="flex items-center gap-2 cursor-pointer">
+                                <input type="checkbox" checked={formData.displacement_filter?.requireHTFAlignment || false}
+                                  onChange={(e) => setFormData({...formData, displacement_filter: {...(formData.displacement_filter || {}), requireHTFAlignment: e.target.checked}})} />
+                                <span className="text-[9px] font-bold uppercase text-zinc-500 tracking-wider">Require HTF Align</span>
                               </label>
                             </div>
                           </div>
