@@ -5,6 +5,7 @@ import { detectSMCSetup, OHLCV, StrategySetup, calcATR, calcEMA, getHTFTrend, SM
 import { MAX_OPEN_POSITIONS, DAILY_LOSS_HALT_PCT } from './src/lib/constants';
 import { logDecisionOnChain, fireAndForget, processRetryQueue, getOnChainPerformance } from './src/lib/mantle';
 import { TRAIL_LEVELS } from './src/lib/backtester';
+import { evaluateFilter, type EdgeFilter, DEFAULT_EDGE_FILTER } from './src/lib/edgeAnalytics';
 
 dotenv.config();
 
@@ -912,6 +913,22 @@ Return ONLY valid JSON — no markdown, no explanation outside JSON:
               if (!existing || existing.length === 0) {
                 // AI scores the setup — non-blocking, fallback to 0 on error (F-003)
                 const aiScore = await this.scoreAIConfidence(setup, symbol);
+
+                // ── Edge Filter v1 ──────────────────────────────────────────
+                const edgeFilter: EdgeFilter = this.settings?.edge_filter || DEFAULT_EDGE_FILTER;
+                if (edgeFilter.enableEdgeFilter) {
+                  const filterResult = evaluateFilter(edgeFilter, {
+                    symbol,
+                    direction: setup.direction || 'long',
+                    session: setup.session || 'unknown',
+                    aiConfidence: aiScore.confidence,
+                  });
+                  if (!filterResult.passed) {
+                    await this.logStatus(`FILTERED ${symbol}: ${filterResult.reason}`, 'reject');
+                    continue;
+                  }
+                }
+
                 await this.executeTrade(symbol, setup, aiScore);
               } else {
                 const hasOpen = existing.some((t: any) => t.status === 'open');

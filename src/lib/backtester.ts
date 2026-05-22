@@ -9,6 +9,7 @@ import {
   MIN_RISK_ATR_MULTIPLE,
   MIN_RISK_PRICE_PERCENT,
 } from './strategy';
+import { evaluateFilter, type EdgeFilter, DEFAULT_EDGE_FILTER } from './edgeAnalytics';
 
 export interface Candle {
   time: number;
@@ -171,6 +172,8 @@ export interface BacktestOptions {
   feePercent?:        number;    // trading fee per side (e.g. 0.001 = 0.1%)
   slippagePercent?:   number;    // slippage per execution (e.g. 0.0005 = 0.05%)
   intrabarMode?:      'conservative' | 'optimistic';
+  // ── Edge filter ────────────────────────────────────────────────────────────
+  edgeFilter?:        EdgeFilter;
 }
 
 // ── Core simulation engine ────────────────────────────────────────────────────
@@ -191,6 +194,8 @@ interface SimOptions {
   feePercent:         number;
   slippagePercent:    number;
   intrabarMode:       'conservative' | 'optimistic';
+  edgeFilter?:        EdgeFilter;
+  symbol?:            string;
 }
 
 function simulateTrades(opts: SimOptions): { trades: Trade[]; equityCurve: number[]; finalBalance: number } {
@@ -198,6 +203,7 @@ function simulateTrades(opts: SimOptions): { trades: Trade[]; equityCurve: numbe
     data, htf1h, htf4h, startIndex, endIndex,
     initialBalance, rr, riskPercent, allowedDirections,
     smc, enableTrailingStop, useCompounding, feePercent, slippagePercent, intrabarMode,
+    edgeFilter, symbol: simSymbol,
   } = opts;
 
   let balance = initialBalance;
@@ -233,6 +239,20 @@ function simulateTrades(opts: SimOptions): { trades: Trade[]; equityCurve: numbe
     if (!allowedDirections.includes(setup.direction)) {
       equityCurve.push(balance);
       continue;
+    }
+
+    // ── Edge Filter v1 ──────────────────────────────────────────────────────
+    if (edgeFilter?.enableEdgeFilter) {
+      const filterResult = evaluateFilter(edgeFilter, {
+        symbol: simSymbol || 'unknown',
+        direction: setup.direction,
+        session: setup.session || getUTCSession(barTime.getUTCHours()),
+        aiConfidence: 0, // no AI scoring in backtest
+      });
+      if (!filterResult.passed) {
+        equityCurve.push(balance);
+        continue;
+      }
     }
 
     // ── Lookahead prevention: enter on NEXT candle, not the signal candle ────
@@ -647,6 +667,7 @@ export function runBacktest(
     allowedDirections, smc, enableTrailingStop,
     useCompounding: true, feePercent: 0, slippagePercent: 0,
     intrabarMode: 'optimistic',
+    edgeFilter: options.edgeFilter,
   });
 
   return buildResult(sim.trades, sim.equityCurve, sim.finalBalance);
@@ -696,6 +717,7 @@ export function runComprehensiveBacktest(
     feePercent         = 0.001,
     slippagePercent    = 0.0005,
     intrabarMode       = 'conservative',
+    edgeFilter,
   } = options;
 
   const htf1h: OHLCV[] = [];
@@ -724,6 +746,7 @@ export function runComprehensiveBacktest(
     startIndex: 0, endIndex: data.length,
     initialBalance, rr, riskPercent,
     allowedDirections, smc, enableTrailingStop,
+    edgeFilter,
   };
 
   // A. Ideal backtest

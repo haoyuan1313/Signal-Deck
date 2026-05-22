@@ -29,6 +29,7 @@ export default function Config() {
     atr_period: 14,
     allowed_sessions: ['london', 'ny_am', 'ny_pm'] as string[],
     require_4h_align: true,
+    edge_filter: { enableEdgeFilter: false, allowedSymbols: [], blockedSymbols: [], allowedSessions: [], allowedDirections: [], minAIConfidence: null, maxAIConfidence: null, requireAIConfidence: false } as any,
   });
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'success'>('idle');
 
@@ -74,6 +75,7 @@ export default function Config() {
         atr_period: settings.atr_period || 14,
         allowed_sessions: settings.allowed_sessions || ['london', 'ny_am', 'ny_pm'],
         require_4h_align: settings.require_4h_align ?? true,
+        edge_filter: (settings as any).edge_filter || { enableEdgeFilter: false, allowedSymbols: [], blockedSymbols: [], allowedSessions: [], allowedDirections: [], minAIConfidence: null, maxAIConfidence: null, requireAIConfidence: false },
       });
     }
   }, [settings]);
@@ -426,6 +428,113 @@ export default function Config() {
                             </label>
                           ))}
                         </div>
+                      </div>
+
+                      {/* ── Edge Filter v1 ────────────────────────────────── */}
+                      <div className="space-y-4 pt-2 border-t border-zinc-800/50">
+                        <div className="flex items-center justify-between">
+                          <label className="text-xs font-bold uppercase text-zinc-500 tracking-wider">Edge Filter v1</label>
+                          <label className="relative inline-flex items-center cursor-pointer">
+                            <input type="checkbox" className="sr-only peer"
+                              checked={formData.edge_filter?.enableEdgeFilter || false}
+                              onChange={(e) => setFormData({...formData, edge_filter: {...(formData.edge_filter || {}), enableEdgeFilter: e.target.checked}})} />
+                            <div className="w-9 h-5 bg-zinc-800 rounded-full peer peer-checked:bg-violet-500 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-4"></div>
+                          </label>
+                        </div>
+                        <p className="text-[10px] text-zinc-500 italic">
+                          Reduce bad trades by filtering symbols, sessions, directions, and AI confidence. Default: OFF.
+                        </p>
+
+                        {formData.edge_filter?.enableEdgeFilter && (
+                          <div className="space-y-3 bg-zinc-800/30 rounded-xl p-4">
+                            <div className="grid grid-cols-2 gap-3">
+                              <div>
+                                <label className="text-[9px] font-bold uppercase text-zinc-500 tracking-wider">Allowed Symbols</label>
+                                <button onClick={() => {
+                                  const ef = formData.edge_filter || {};
+                                  const cur = ef.allowedSymbols || [];
+                                  const preset = ['XRP/USDT', 'ONDO/USDT', 'SOL/USDT'];
+                                  setFormData({...formData, edge_filter: {...ef, allowedSymbols: cur.length > 0 ? [] : preset, enableEdgeFilter: true}});
+                                }}
+                                className="w-full mt-1 px-3 py-1.5 rounded-lg bg-zinc-800 text-[10px] font-bold text-zinc-400 hover:text-white transition-colors text-left">
+                                  {(formData.edge_filter?.allowedSymbols?.length || 0) > 0
+                                    ? formData.edge_filter?.allowedSymbols?.join(', ')
+                                    : 'Click for conservative preset'}
+                                </button>
+                              </div>
+                              <div>
+                                <label className="text-[9px] font-bold uppercase text-zinc-500 tracking-wider">Blocked Symbols</label>
+                                <button onClick={() => {
+                                  const ef = formData.edge_filter || {};
+                                  const cur = ef.blockedSymbols || [];
+                                  const preset = ['DOGE/USDT', 'ETH/USDT'];
+                                  setFormData({...formData, edge_filter: {...ef, blockedSymbols: cur.length > 0 ? [] : preset, enableEdgeFilter: true}});
+                                }}
+                                className="w-full mt-1 px-3 py-1.5 rounded-lg bg-zinc-800 text-[10px] font-bold text-zinc-400 hover:text-white transition-colors text-left">
+                                  {(formData.edge_filter?.blockedSymbols?.length || 0) > 0
+                                    ? formData.edge_filter?.blockedSymbols?.join(', ')
+                                    : 'Click for conservative preset'}
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-3">
+                              <div>
+                                <label className="text-[9px] font-bold uppercase text-zinc-500 tracking-wider">Allowed Sessions</label>
+                                <button onClick={() => {
+                                  const ef = formData.edge_filter || {};
+                                  const cur = ef.allowedSessions || [];
+                                  const preset = ['London'];
+                                  setFormData({...formData, edge_filter: {...ef, allowedSessions: cur.length > 0 ? [] : preset, enableEdgeFilter: true}});
+                                }}
+                                className="w-full mt-1 px-3 py-1.5 rounded-lg bg-zinc-800 text-[10px] font-bold text-zinc-400 hover:text-white transition-colors text-left">
+                                  {(formData.edge_filter?.allowedSessions?.length || 0) > 0
+                                    ? formData.edge_filter?.allowedSessions?.join(', ')
+                                    : 'Click for conservative preset'}
+                                </button>
+                              </div>
+                              <div>
+                                <label className="text-[9px] font-bold uppercase text-zinc-500 tracking-wider">Allowed Directions</label>
+                                <button onClick={() => {
+                                  const ef = formData.edge_filter || {};
+                                  const cur = ef.allowedDirections || [];
+                                  const preset = ['long'];
+                                  setFormData({...formData, edge_filter: {...ef, allowedDirections: cur.length > 0 ? [] : preset, enableEdgeFilter: true}});
+                                }}
+                                className="w-full mt-1 px-3 py-1.5 rounded-lg bg-zinc-800 text-[10px] font-bold text-zinc-400 hover:text-white transition-colors text-left">
+                                  {(formData.edge_filter?.allowedDirections?.length || 0) > 0
+                                    ? formData.edge_filter?.allowedDirections?.join(', ')
+                                    : 'Click for conservative preset'}
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-3">
+                              <div>
+                                <label className="text-[9px] font-bold uppercase text-zinc-500 tracking-wider">Min AI Confidence</label>
+                                <input type="number" placeholder="e.g. 6000"
+                                  value={formData.edge_filter?.minAIConfidence || ''}
+                                  onChange={(e) => setFormData({...formData, edge_filter: {...(formData.edge_filter || {}), minAIConfidence: e.target.value ? parseInt(e.target.value) : null}})}
+                                  className="w-full mt-1 px-3 py-1.5 rounded-lg bg-zinc-800 text-[10px] font-bold text-white outline-none" />
+                              </div>
+                              <div>
+                                <label className="text-[9px] font-bold uppercase text-zinc-500 tracking-wider">Max AI Confidence</label>
+                                <input type="number" placeholder="e.g. 8000"
+                                  value={formData.edge_filter?.maxAIConfidence || ''}
+                                  onChange={(e) => setFormData({...formData, edge_filter: {...(formData.edge_filter || {}), maxAIConfidence: e.target.value ? parseInt(e.target.value) : null}})}
+                                  className="w-full mt-1 px-3 py-1.5 rounded-lg bg-zinc-800 text-[10px] font-bold text-white outline-none" />
+                              </div>
+                            </div>
+
+                            <div>
+                              <label className="flex items-center gap-2 cursor-pointer">
+                                <input type="checkbox" checked={formData.edge_filter?.requireAIConfidence || false}
+                                  onChange={(e) => setFormData({...formData, edge_filter: {...(formData.edge_filter || {}), requireAIConfidence: e.target.checked}})} />
+                                <span className="text-[9px] font-bold uppercase text-zinc-500 tracking-wider">Require AI Confidence</span>
+                              </label>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </div>
                     <div className="p-6 bg-zinc-800/30 flex items-center justify-end px-8">

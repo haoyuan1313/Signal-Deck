@@ -1,4 +1,172 @@
-// ── Edge Analytics — pure computation, no strategy changes ─────────────────────
+// ── Edge Analytics & Filter — pure computation, no strategy changes ────────────
+
+// ── Edge Filter v1 ───────────────────────────────────────────────────────────
+
+export interface EdgeFilter {
+  enableEdgeFilter: boolean;
+  allowedSymbols: string[];
+  blockedSymbols: string[];
+  allowedSessions: string[];    // UTC session names: Asian, London, NY AM, NY PM, Late
+  allowedDirections: string[];  // 'long' | 'short'
+  minAIConfidence: number | null;  // 0–10000 scale, null = no min
+  maxAIConfidence: number | null;  // 0–10000 scale, null = no max
+  requireAIConfidence: boolean;    // if true, block trades with no AI score
+}
+
+export const DEFAULT_EDGE_FILTER: EdgeFilter = {
+  enableEdgeFilter: false,
+  allowedSymbols: [],
+  blockedSymbols: [],
+  allowedSessions: [],
+  allowedDirections: [],
+  minAIConfidence: null,
+  maxAIConfidence: null,
+  requireAIConfidence: false,
+};
+
+export const CONSERVATIVE_EDGE_V1_PRESET: EdgeFilter = {
+  enableEdgeFilter: true,
+  allowedSymbols: ['XRP/USDT', 'ONDO/USDT', 'SOL/USDT'],
+  blockedSymbols: ['DOGE/USDT', 'ETH/USDT'],
+  allowedSessions: ['London'],
+  allowedDirections: ['long'],
+  minAIConfidence: 6000,
+  maxAIConfidence: 8000,
+  requireAIConfidence: true,
+};
+
+export interface FilterResult {
+  passed: boolean;
+  reason: string; // empty if passed
+}
+
+export interface FilterPreview {
+  totalTrades: number;
+  passedCount: number;
+  excludedCount: number;
+  passedWinRate: number;
+  passedNetR: number;
+  passedAvgR: number;
+  passedProfitFactor: number;
+  exclusionReasons: { reason: string; count: number }[];
+  warning?: string;
+}
+
+/**
+ * Evaluate whether a trade/setup passes the edge filter.
+ * @param filter - the filter config
+ * @param context - trade context (symbol, direction, session, aiConfidence)
+ */
+export function evaluateFilter(
+  filter: EdgeFilter,
+  context: {
+    symbol: string;
+    direction: string;
+    session: string;
+    aiConfidence?: number;
+  },
+): FilterResult {
+  if (!filter.enableEdgeFilter) return { passed: true, reason: '' };
+
+  // Blocked symbols
+  if (filter.blockedSymbols.length > 0 && filter.blockedSymbols.includes(context.symbol)) {
+    return { passed: false, reason: `Symbol ${context.symbol} blocked` };
+  }
+
+  // Allowed symbols (if list is non-empty, only allow those)
+  if (filter.allowedSymbols.length > 0 && !filter.allowedSymbols.includes(context.symbol)) {
+    return { passed: false, reason: `Symbol ${context.symbol} not in allowed list` };
+  }
+
+  // Session
+  if (filter.allowedSessions.length > 0 && !filter.allowedSessions.includes(context.session)) {
+    return { passed: false, reason: `Session ${context.session} not allowed` };
+  }
+
+  // Direction
+  if (filter.allowedDirections.length > 0 && !filter.allowedDirections.includes(context.direction)) {
+    return { passed: false, reason: `Direction ${context.direction} not allowed` };
+  }
+
+  // AI confidence required but missing
+  if (filter.requireAIConfidence && (context.aiConfidence === undefined || context.aiConfidence === null || context.aiConfidence === 0)) {
+    return { passed: false, reason: 'AI confidence required but missing' };
+  }
+
+  // AI confidence range
+  if (filter.minAIConfidence !== null && context.aiConfidence !== undefined && context.aiConfidence !== null && context.aiConfidence > 0) {
+    if (context.aiConfidence < filter.minAIConfidence) {
+      return { passed: false, reason: `AI confidence ${context.aiConfidence} < min ${filter.minAIConfidence}` };
+    }
+  }
+  if (filter.maxAIConfidence !== null && context.aiConfidence !== undefined && context.aiConfidence !== null && context.aiConfidence > 0) {
+    if (context.aiConfidence > filter.maxAIConfidence) {
+      return { passed: false, reason: `AI confidence ${context.aiConfidence} > max ${filter.maxAIConfidence}` };
+    }
+  }
+
+  return { passed: true, reason: '' };
+}
+
+/**
+ * Preview how many historical trades would pass a given filter.
+ */
+export function previewFilter(
+  filter: EdgeFilter,
+  trades: TradeRow[],
+): FilterPreview {
+  const MIN_SAMPLE = 30;
+  const closed = trades.filter(t => t.r !== null && t.r !== undefined);
+
+  const passed: TradeRow[] = [];
+  const excluded: TradeRow[] = [];
+  const reasonCounts = new Map<string, number>();
+
+  for (const t of closed) {
+    const result = evaluateFilter(filter, {
+      symbol: t.symbol,
+      direction: t.direction,
+      session: classifySession(t.opened_at),
+      aiConfidence: t.ai_confidence,
+    });
+    if (result.passed) {
+      passed.push(t);
+    } else {
+      excluded.push(t);
+      reasonCounts.set(result.reason, (reasonCounts.get(result.reason) || 0) + 1);
+    }
+  }
+
+  const passedCount = passed.length;
+  const totalTrades = closed.length;
+  const wins = passed.filter(t => (t.r ?? 0) > 0).length;
+  const winRate = passedCount > 0 ? (wins / passedCount) * 100 : 0;
+  const netR = passed.reduce((s, t) => s + (t.r ?? 0), 0);
+  const avgR = passedCount > 0 ? netR / passedCount : 0;
+
+  const grossProfit = passed.filter(t => (t.r ?? 0) > 0).reduce((s, t) => s + (t.r ?? 0), 0);
+  const grossLoss = Math.abs(passed.filter(t => (t.r ?? 0) < 0).reduce((s, t) => s + (t.r ?? 0), 0));
+  const profitFactor = grossLoss === 0 ? (grossProfit > 0 ? 99 : 0) : grossProfit / grossLoss;
+
+  const exclusionReasons = Array.from(reasonCounts.entries())
+    .map(([reason, count]) => ({ reason, count }))
+    .sort((a, b) => b.count - a.count);
+
+  const warning = passedCount > 0 && passedCount < MIN_SAMPLE
+    ? `Sample too small (${passedCount} < ${MIN_SAMPLE}). Do not scale risk.` : undefined;
+
+  return {
+    totalTrades,
+    passedCount,
+    excludedCount: excluded.length,
+    passedWinRate: Math.round(winRate * 10) / 10,
+    passedNetR: Math.round(netR * 100) / 100,
+    passedAvgR: Math.round(avgR * 1000) / 1000,
+    passedProfitFactor: Math.round(profitFactor * 100) / 100,
+    exclusionReasons,
+    warning,
+  };
+}
 
 export interface TradeRow {
   symbol: string;

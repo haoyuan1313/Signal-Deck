@@ -2,7 +2,7 @@ import { useStore } from '../store/useStore';
 import { useEffect, useState } from 'react';
 import { formatR, formatCurrency, cn, formatDate } from '../lib/utils';
 import { ArrowUpRight, ArrowDownRight, Download, Filter, Database, X, TrendingUp, Clock, ExternalLink, BarChart3, AlertTriangle, ChevronDown, ChevronRight } from 'lucide-react';
-import { analyzeEdge, type TradeRow, type Breakdown, type EdgeReport } from '../lib/edgeAnalytics';
+import { analyzeEdge, previewFilter, CONSERVATIVE_EDGE_V1_PRESET, type TradeRow, type Breakdown, type EdgeReport, type FilterPreview } from '../lib/edgeAnalytics';
 import { motion, AnimatePresence } from 'motion/react';
 
 export default function TradeHistory() {
@@ -408,6 +408,9 @@ function EdgeAnalytics({ trades, modeFilter }: { trades: any[]; modeFilter: stri
           {/* Edge ranking */}
           <RankingCard report={report} />
 
+          {/* Filter preview */}
+          <FilterPreviewSection trades={tradeRows} />
+
           {/* Breakdown tables */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <BreakdownSection title="By Symbol" breakdowns={report.bySymbol} />
@@ -470,6 +473,78 @@ function RankingCard({ report }: { report: EdgeReport }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+function FilterPreviewSection({ trades }: { trades: TradeRow[] }) {
+  const [showPreview, setShowPreview] = useState(false);
+  if (!showPreview) {
+    return (
+      <button onClick={() => setShowPreview(true)}
+        className="flex items-center gap-2 text-[10px] font-bold text-violet-400 hover:text-violet-300 transition-colors bg-violet-500/10 border border-violet-500/20 rounded-xl px-4 py-2">
+        <BarChart3 size={14} /> Preview Edge Filter on these trades
+      </button>
+    );
+  }
+
+  const preview = previewFilter(CONSERVATIVE_EDGE_V1_PRESET, trades);
+
+  return (
+    <div className="bg-violet-500/5 border border-violet-500/20 rounded-2xl p-5 space-y-3">
+      <div className="flex items-center justify-between">
+        <h4 className="text-[10px] font-black text-violet-400 uppercase tracking-widest">
+          Edge Filter Preview (Conservative v1 preset)
+        </h4>
+        <button onClick={() => setShowPreview(false)} className="text-zinc-500 hover:text-white">
+          <X size={14} />
+        </button>
+      </div>
+
+      {preview.warning && (
+        <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2 text-[10px] font-bold text-amber-400 flex items-center gap-2">
+          <AlertTriangle size={12} /> {preview.warning}
+        </div>
+      )}
+
+      <div className="grid grid-cols-3 gap-3">
+        <div className="bg-zinc-800/50 rounded-xl p-3">
+          <div className="text-[9px] text-zinc-500 uppercase tracking-wider">Passed</div>
+          <div className="text-lg font-black font-mono text-emerald-400">{preview.passedCount}<span className="text-xs text-zinc-500">/{preview.totalTrades}</span></div>
+        </div>
+        <div className="bg-zinc-800/50 rounded-xl p-3">
+          <div className="text-[9px] text-zinc-500 uppercase tracking-wider">Filtered WR</div>
+          <div className="text-lg font-black font-mono text-violet-400">{preview.passedWinRate.toFixed(0)}%</div>
+        </div>
+        <div className="bg-zinc-800/50 rounded-xl p-3">
+          <div className="text-[9px] text-zinc-500 uppercase tracking-wider">Filtered Avg R</div>
+          <div className="text-lg font-black font-mono text-violet-400">{preview.passedAvgR > 0 ? '+' : ''}{preview.passedAvgR.toFixed(3)}R</div>
+        </div>
+        <div className="bg-zinc-800/50 rounded-xl p-3">
+          <div className="text-[9px] text-zinc-500 uppercase tracking-wider">Net R</div>
+          <div className="text-sm font-black font-mono text-violet-400">{preview.passedNetR > 0 ? '+' : ''}{preview.passedNetR.toFixed(1)}R</div>
+        </div>
+        <div className="bg-zinc-800/50 rounded-xl p-3">
+          <div className="text-[9px] text-zinc-500 uppercase tracking-wider">Profit Factor</div>
+          <div className="text-sm font-black font-mono text-violet-400">{preview.passedProfitFactor.toFixed(2)}</div>
+        </div>
+        <div className="bg-zinc-800/50 rounded-xl p-3">
+          <div className="text-[9px] text-zinc-500 uppercase tracking-wider">Excluded</div>
+          <div className="text-sm font-black font-mono text-rose-400">{preview.excludedCount}</div>
+        </div>
+      </div>
+
+      {preview.exclusionReasons.length > 0 && (
+        <div className="space-y-1">
+          <div className="text-[9px] font-bold text-zinc-500 uppercase tracking-wider">Exclusion reasons</div>
+          {preview.exclusionReasons.map((r, i) => (
+            <div key={i} className="flex justify-between text-[10px] text-rose-400 bg-rose-500/5 rounded px-3 py-1">
+              <span>{r.reason}</span>
+              <span className="font-mono">{r.count}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
