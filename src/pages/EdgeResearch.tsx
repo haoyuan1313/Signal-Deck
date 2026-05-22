@@ -1,6 +1,7 @@
 import { useStore } from '../store/useStore';
 import { useState, useMemo } from 'react';
-import { BarChart3, TrendingUp, TrendingDown, AlertTriangle, ShieldCheck, Activity, Zap, Filter, Layers } from 'lucide-react';
+import { BarChart3, TrendingUp, TrendingDown, AlertTriangle, ShieldCheck, Activity, Zap, Filter, Layers, Gauge, Search } from 'lucide-react';
+import { analyzeRegimes, analyzeLondonRegimes, analyzeRegimeOutliers, previewRegimeFilters, getRegimeLabel, type RegimeRow, type RegimeBreakdown, type RegimeOutlierImpact, type RegimeFilterPreview } from '../lib/regimeAnalyzer';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
 import {
@@ -22,6 +23,11 @@ export default function EdgeResearch() {
 
   const allPresets = useMemo(() => tradeRows.length >= 10 ? compareAllPresets(tradeRows) : [], [tradeRows]);
   const [selectedPreset, setSelectedPreset] = useState<string>(RESEARCH_PRESETS[0]?.id || '');
+
+  const regimeRows = useMemo(() => tradeRows.length >= 10 ? analyzeRegimes(tradeRows) : [], [tradeRows]);
+  const londonRegimes = useMemo(() => tradeRows.length >= 10 ? analyzeLondonRegimes(tradeRows) : [], [tradeRows]);
+  const regimeOutliers = useMemo(() => tradeRows.length >= 10 ? analyzeRegimeOutliers(tradeRows) : [], [tradeRows]);
+  const regimePreviews = useMemo(() => tradeRows.length >= 10 ? previewRegimeFilters(tradeRows) : [], [tradeRows]);
 
   const active = allPresets.find(p => p.presetId === selectedPreset);
 
@@ -89,6 +95,15 @@ export default function EdgeResearch() {
 
               {/* All presets comparison table */}
               <ComparisonTable presets={allPresets} tradeCount={tradeRows.length} />
+
+              {/* ── Regime Analysis ─────────────────────────────────────── */}
+              <RegimePerformanceCard regimes={regimeRows} />
+
+              <LondonRegimeCard breakdowns={londonRegimes} />
+
+              <RegimeOutlierCard outliers={regimeOutliers} />
+
+              <RegimeFilterPreviewCard previews={regimePreviews} />
             </motion.div>
           )}
         </>
@@ -262,6 +277,165 @@ function ComparisonTable({ presets, tradeCount }: { presets: PresetComparison[];
             ))}
           </tbody>
         </table>
+      </div>
+    </div>
+  );
+}
+
+// ── Regime Analysis Components ─────────────────────────────────────────────────
+
+function RegimePerformanceCard({ regimes }: { regimes: RegimeRow[] }) {
+  if (regimes.length === 0) return null;
+  return (
+    <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-8">
+      <h3 className="text-sm font-black text-white uppercase tracking-widest mb-6 flex items-center gap-2">
+        <Gauge size={18} className="text-emerald-400" /> Market Regime Performance
+      </h3>
+      <p className="text-[10px] text-zinc-500 mb-4">
+        Trades classified by market conditions using entry risk, R magnitude, session context, and AI confidence as proxies.
+      </p>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-zinc-600 text-[9px] font-bold uppercase tracking-wider border-b border-zinc-800/50">
+              <th className="px-3 py-2 text-left">Regime</th>
+              <th className="px-3 py-2 text-right">Trades</th>
+              <th className="px-3 py-2 text-right">Avg R</th>
+              <th className="px-3 py-2 text-right">PF</th>
+              <th className="px-3 py-2 text-right">WR</th>
+              <th className="px-3 py-2 text-right">Max L</th>
+              <th className="px-3 py-2 text-right">Avg Risk%</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-zinc-800/30">
+            {regimes.map(r => (
+              <tr key={r.regime} className="hover:bg-zinc-800/10">
+                <td className="px-3 py-3 font-bold text-white">{r.label}</td>
+                <td className="px-3 py-3 text-right font-mono text-zinc-400">{r.count}</td>
+                <td className="px-3 py-3 text-right font-mono">
+                  <span className={r.avgR >= 0 ? 'text-emerald-400' : 'text-rose-400'}>{r.avgR > 0 ? '+' : ''}{r.avgR.toFixed(3)}R</span>
+                </td>
+                <td className="px-3 py-3 text-right font-mono text-zinc-400">{r.pf.toFixed(2)}</td>
+                <td className="px-3 py-3 text-right font-mono text-zinc-400">{r.winRate.toFixed(0)}%</td>
+                <td className="px-3 py-3 text-right font-mono text-zinc-400">{r.maxLosingStreak}</td>
+                <td className="px-3 py-3 text-right font-mono text-zinc-400">{r.avgRiskPct.toFixed(2)}%</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function LondonRegimeCard({ breakdowns }: { breakdowns: RegimeBreakdown[] }) {
+  if (breakdowns.length === 0) return null;
+  return (
+    <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-8">
+      <h3 className="text-sm font-black text-white uppercase tracking-widest mb-6 flex items-center gap-2">
+        <Search size={18} className="text-amber-400" /> London Session Regime Breakdown
+      </h3>
+      <p className="text-[10px] text-zinc-500 mb-4">
+        Which London market conditions actually produce edge? Drills into the most promising session.
+      </p>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {breakdowns.map(b => (
+          <div key={b.label} className={cn(
+            "bg-zinc-800/30 rounded-xl p-4 border",
+            b.avgR > 0 ? "border-emerald-500/20 bg-emerald-500/5" : "border-zinc-700/30"
+          )}>
+            <div className="text-sm font-bold text-white mb-3">{b.label}</div>
+            <div className="grid grid-cols-2 gap-2 text-[10px]">
+              <div><span className="text-zinc-500">Trades</span><div className="font-mono text-white">{b.count}</div></div>
+              <div><span className="text-zinc-500">Avg R</span><div className={cn("font-mono", b.avgR >= 0 ? 'text-emerald-400' : 'text-rose-400')}>{b.avgR > 0 ? '+' : ''}{b.avgR.toFixed(3)}R</div></div>
+              <div><span className="text-zinc-500">PF</span><div className="font-mono text-zinc-400">{b.pf.toFixed(2)}</div></div>
+              <div><span className="text-zinc-500">WR</span><div className="font-mono text-zinc-400">{b.winRate.toFixed(0)}%</div></div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function RegimeOutlierCard({ outliers }: { outliers: RegimeOutlierImpact[] }) {
+  if (outliers.length === 0) return null;
+  return (
+    <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-8">
+      <h3 className="text-sm font-black text-white uppercase tracking-widest mb-6 flex items-center gap-2">
+        <TrendingDown size={18} className="text-amber-400" /> Regime Outlier Robustness
+      </h3>
+      <p className="text-[10px] text-zinc-500 mb-4">
+        Expectancy per regime after removing top 1 and top 3 trades. Warnings appear if edge collapses.
+      </p>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-zinc-600 text-[9px] font-bold uppercase tracking-wider border-b border-zinc-800/50">
+              <th className="px-3 py-2 text-left">Regime</th>
+              <th className="px-3 py-2 text-right">Original R</th>
+              <th className="px-3 py-2 text-right">-Top1 R</th>
+              <th className="px-3 py-2 text-right">-Top3 R</th>
+              <th className="px-3 py-2 text-left">Warning</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-zinc-800/30">
+            {outliers.map(o => (
+              <tr key={o.regime} className={cn("hover:bg-zinc-800/10", o.warning && "bg-amber-500/5")}>
+                <td className="px-3 py-3 font-bold text-white">{o.label}</td>
+                <td className="px-3 py-3 text-right font-mono">
+                  <span className={o.originalAvgR >= 0 ? 'text-emerald-400' : 'text-rose-400'}>{o.originalAvgR > 0 ? '+' : ''}{o.originalAvgR.toFixed(3)}R</span>
+                </td>
+                <td className="px-3 py-3 text-right font-mono text-zinc-400">{o.withoutTop1 > 0 ? '+' : ''}{o.withoutTop1.toFixed(3)}R</td>
+                <td className="px-3 py-3 text-right font-mono text-zinc-400">{o.withoutTop3 > 0 ? '+' : ''}{o.withoutTop3.toFixed(3)}R</td>
+                <td className="px-3 py-3">
+                  {o.warning ? <span className="text-[9px] text-amber-400 font-bold flex items-center gap-1"><AlertTriangle size={10} />{o.warning}</span>
+                    : <span className="text-[9px] text-zinc-500">Stable</span>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function RegimeFilterPreviewCard({ previews }: { previews: RegimeFilterPreview[] }) {
+  if (previews.length === 0) return null;
+  return (
+    <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-8">
+      <h3 className="text-sm font-black text-white uppercase tracking-widest mb-6 flex items-center gap-2">
+        <Filter size={18} className="text-violet-400" /> Regime-Aware Filter Previews
+      </h3>
+      <p className="text-[10px] text-zinc-500 mb-4">
+        Estimated impact of filtering to specific regimes. No strategy changes applied — preview only.
+      </p>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {previews.map(p => (
+          <div key={p.filterLabel} className="bg-zinc-800/30 rounded-xl p-4 border border-zinc-700/30">
+            <div className="text-sm font-bold text-white mb-1">{p.filterLabel}</div>
+            <div className="text-[9px] text-zinc-500 mb-3">{p.description}</div>
+            <div className="grid grid-cols-2 gap-2 text-[10px]">
+              <div>
+                <span className="text-zinc-500">Est. trades</span>
+                <div className="font-mono text-white">{p.tradesPassed} <span className="text-zinc-600">/ {p.tradesPassed + p.tradesExcluded}</span></div>
+              </div>
+              <div>
+                <span className="text-zinc-500">Est. Avg R</span>
+                <div className={cn("font-mono", p.estimatedAvgR >= 0 ? 'text-emerald-400' : 'text-rose-400')}>{p.estimatedAvgR > 0 ? '+' : ''}{p.estimatedAvgR.toFixed(3)}R</div>
+              </div>
+              <div>
+                <span className="text-zinc-500">Reduction</span>
+                <div className="font-mono text-zinc-400">{p.tradesExcluded > 0 ? '−' : ''}{p.tradesExcluded} trades</div>
+              </div>
+              <div>
+                <span className="text-zinc-500">Est. PF</span>
+                <div className="font-mono text-zinc-400">{p.estimatedPF.toFixed(2)}</div>
+              </div>
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );
