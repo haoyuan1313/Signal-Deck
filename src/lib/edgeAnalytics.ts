@@ -371,3 +371,309 @@ export function analyzeEdge(trades: TradeRow[]): EdgeReport {
     overall: computeRow(closed),
   };
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── Edge Filter Research Mode v2 — sensitivity, presets, stability ────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── Research presets ──────────────────────────────────────────────────────────
+
+export const RESEARCH_PRESETS: { id: string; label: string; description: string; filter: EdgeFilter }[] = [
+  {
+    id: 'conservative-v1',
+    label: 'A. Conservative v1',
+    description: 'XRP, ONDO, SOL · London · long · AI 60–80%',
+    filter: CONSERVATIVE_EDGE_V1_PRESET,
+  },
+  {
+    id: 'moderate-v1',
+    label: 'B. Moderate v1',
+    description: 'XRP, ONDO, SOL · London + NY AM · long · AI 60–80%',
+    filter: {
+      enableEdgeFilter: true,
+      allowedSymbols: ['XRP/USDT', 'ONDO/USDT', 'SOL/USDT'],
+      blockedSymbols: ['DOGE/USDT', 'ETH/USDT'],
+      allowedSessions: ['London', 'NY AM'],
+      allowedDirections: ['long'],
+      minAIConfidence: 6000,
+      maxAIConfidence: 8000,
+      requireAIConfidence: true,
+    },
+  },
+  {
+    id: 'expanded-v1',
+    label: 'C. Expanded v1',
+    description: 'XRP, ONDO, SOL, ADA · London + NY AM + Asian · long · AI ≥ 60%',
+    filter: {
+      enableEdgeFilter: true,
+      allowedSymbols: ['XRP/USDT', 'ONDO/USDT', 'SOL/USDT', 'ADA/USDT'],
+      blockedSymbols: ['DOGE/USDT', 'ETH/USDT'],
+      allowedSessions: ['London', 'NY AM', 'Asian'],
+      allowedDirections: ['long'],
+      minAIConfidence: 6000,
+      maxAIConfidence: null,
+      requireAIConfidence: true,
+    },
+  },
+  {
+    id: 'symbol-only',
+    label: 'D. Symbol-only',
+    description: 'XRP, ONDO, SOL · all sessions · both directions · any AI',
+    filter: {
+      enableEdgeFilter: true,
+      allowedSymbols: ['XRP/USDT', 'ONDO/USDT', 'SOL/USDT'],
+      blockedSymbols: ['DOGE/USDT', 'ETH/USDT'],
+      allowedSessions: [],
+      allowedDirections: [],
+      minAIConfidence: null,
+      maxAIConfidence: null,
+      requireAIConfidence: false,
+    },
+  },
+  {
+    id: 'session-only',
+    label: 'E. Session-only',
+    description: 'All symbols · London · both directions · any AI',
+    filter: {
+      enableEdgeFilter: true,
+      allowedSymbols: [],
+      blockedSymbols: [],
+      allowedSessions: ['London'],
+      allowedDirections: [],
+      minAIConfidence: null,
+      maxAIConfidence: null,
+      requireAIConfidence: false,
+    },
+  },
+];
+
+// ── Contribution analysis ─────────────────────────────────────────────────────
+
+export interface FilterContribution {
+  filterName: string;
+  removed: boolean; // true = this filter was removed
+  tradesAdded: number;
+  newAvgR: number;
+  newPF: number;
+  newWR: number;
+  avgRDelta: number;
+  pfDelta: number;
+  wrDelta: number;
+}
+
+export function analyzeFilterContributions(
+  baseFilter: EdgeFilter,
+  trades: TradeRow[],
+): FilterContribution[] {
+  const dimensions: { name: string; filter: EdgeFilter }[] = [
+    { name: 'Symbol filter', filter: { ...baseFilter, allowedSymbols: [], blockedSymbols: [] } },
+    { name: 'Session filter', filter: { ...baseFilter, allowedSessions: [] } },
+    { name: 'Direction filter', filter: { ...baseFilter, allowedDirections: [] } },
+    { name: 'AI confidence filter', filter: { ...baseFilter, minAIConfidence: null, maxAIConfidence: null, requireAIConfidence: false } },
+  ];
+
+  const basePreview = previewFilter(baseFilter, trades);
+
+  return dimensions.map(({ name, filter }) => {
+    const preview = previewFilter(filter, trades);
+    return {
+      filterName: name,
+      removed: true,
+      tradesAdded: preview.passedCount - basePreview.passedCount,
+      newAvgR: preview.passedAvgR,
+      newPF: preview.passedProfitFactor,
+      newWR: preview.passedWinRate,
+      avgRDelta: Math.round((preview.passedAvgR - basePreview.passedAvgR) * 1000) / 1000,
+      pfDelta: Math.round((preview.passedProfitFactor - basePreview.passedProfitFactor) * 100) / 100,
+      wrDelta: Math.round((preview.passedWinRate - basePreview.passedWinRate) * 10) / 10,
+    };
+  });
+}
+
+// ── Stability metrics ─────────────────────────────────────────────────────────
+
+export interface StabilityMetrics {
+  tradeCount: number;
+  avgR: number;
+  pf: number;
+  maxLosingStreak: number;
+  longestFlatPeriod: number;    // max consecutive trades with cumulative R ≤ 0
+  monteCarloMedian: number;
+  monteCarloWorst5: number;
+  sampleConfidenceScore: number; // 0–100
+}
+
+function monteCarloR(rValues: number[], runs: number = 1000): { median: number; worst5: number } {
+  if (rValues.length === 0) return { median: 0, worst5: 0 };
+  const finalBalances: number[] = [];
+  for (let r = 0; r < runs; r++) {
+    // Shuffle and accumulate
+    const shuffled = [...rValues].sort(() => Math.random() - 0.5);
+    let sum = 0;
+    for (const v of shuffled) sum += v;
+    finalBalances.push(sum);
+  }
+  const sorted = [...finalBalances].sort((a, b) => a - b);
+  const n = sorted.length;
+  const median = n % 2 === 0 ? (sorted[n / 2 - 1] + sorted[n / 2]) / 2 : sorted[Math.floor(n / 2)];
+  const worst5 = sorted[Math.floor(n * 0.05)];
+  return { median, worst5 };
+}
+
+export function computeStabilityMetrics(filter: EdgeFilter, trades: TradeRow[]): StabilityMetrics {
+  const preview = previewFilter(filter, trades);
+  // Use all filtered trades for the closed list
+  const closed = trades.filter(t => t.r !== null && t.r !== undefined);
+  const passed = closed.filter(t => {
+    const result = evaluateFilter(filter, {
+      symbol: t.symbol, direction: t.direction,
+      session: classifySession(t.opened_at), aiConfidence: t.ai_confidence,
+    });
+    return result.passed;
+  });
+
+  const rValues = passed.map(t => t.r!);
+  const { median, worst5 } = monteCarloR(rValues);
+
+  // Longest flat period: max consecutive trades where cumulative R ≤ 0
+  let longestFlat = 0;
+  let flatCount = 0;
+  let cumulativeR = 0;
+  for (const r of rValues) {
+    cumulativeR += r;
+    if (cumulativeR <= 0) {
+      flatCount++;
+      if (flatCount > longestFlat) longestFlat = flatCount;
+    } else {
+      flatCount = 0;
+      cumulativeR = 0;
+    }
+  }
+
+  // Max losing streak from R values
+  let maxCL = 0, curCL = 0;
+  for (const r of rValues) {
+    if (r < 0) { curCL++; maxCL = Math.max(maxCL, curCL); } else { curCL = 0; }
+  }
+
+  // Confidence score heuristic
+  let confidence = 50; // neutral start
+  if (rValues.length >= 100) confidence += 20;
+  else if (rValues.length >= 50) confidence += 10;
+  else if (rValues.length >= 30) confidence += 5;
+  else confidence -= 20;
+
+  if (preview.passedAvgR > 0.1) confidence += 15;
+  else if (preview.passedAvgR > 0) confidence += 5;
+  else confidence -= 10;
+
+  if (preview.passedProfitFactor > 2.0) confidence += 10;
+  else if (preview.passedProfitFactor > 1.3) confidence += 5;
+  else confidence -= 5;
+
+  if (maxCL <= 5) confidence += 5;
+  else if (maxCL > 10) confidence -= 5;
+
+  if (longestFlat <= 10) confidence += 5;
+  else if (longestFlat > 20) confidence -= 5;
+
+  confidence = Math.max(0, Math.min(100, confidence));
+
+  return {
+    tradeCount: rValues.length,
+    avgR: preview.passedAvgR,
+    pf: preview.passedProfitFactor,
+    maxLosingStreak: maxCL,
+    longestFlatPeriod: longestFlat,
+    monteCarloMedian: Math.round(median * 100) / 100,
+    monteCarloWorst5: Math.round(worst5 * 100) / 100,
+    sampleConfidenceScore: confidence,
+  };
+}
+
+// ── Outlier detection ─────────────────────────────────────────────────────────
+
+export interface OutlierImpact {
+  topRemoved: number;
+  remainingTrades: number;
+  newAvgR: number;
+  newPF: number;
+  avgRDelta: number;
+  pfDelta: number;
+  warning?: string;
+}
+
+export function detectOutlierImpact(filter: EdgeFilter, trades: TradeRow[]): OutlierImpact[] {
+  const closed = trades.filter(t => t.r !== null && t.r !== undefined);
+  const passed = closed.filter(t => {
+    const result = evaluateFilter(filter, {
+      symbol: t.symbol, direction: t.direction,
+      session: classifySession(t.opened_at), aiConfidence: t.ai_confidence,
+    });
+    return result.passed;
+  });
+
+  const rValues = passed.map(t => t.r!).sort((a, b) => b - a); // descending
+
+  const computeImpact = (removeTop: number): OutlierImpact => {
+    const remaining = rValues.slice(removeTop);
+    const sum = remaining.reduce((a, v) => a + v, 0);
+    const avgR = remaining.length > 0 ? sum / remaining.length : 0;
+    const wins = remaining.filter(r => r > 0);
+    const losses = remaining.filter(r => r < 0);
+    const grossProfit = wins.reduce((a, r) => a + r, 0);
+    const grossLoss = Math.abs(losses.reduce((a, r) => a + r, 0));
+    const pf = grossLoss === 0 ? (grossProfit > 0 ? 99 : 0) : grossProfit / grossLoss;
+
+    const originalAvgR = rValues.reduce((a, v) => a + v, 0) / rValues.length;
+
+    const avgRDelta = originalAvgR - avgR;
+    const pfDelta = pf - (previewFilter(filter, trades).passedProfitFactor);
+
+    let warning: string | undefined;
+    if (recalculateAvgWithoutTop(rValues, removeTop) <= 0 && originalAvgR > 0) {
+      warning = `Edge collapses when top ${removeTop} trade(s) removed — may depend on outliers.`;
+    }
+
+    return {
+      topRemoved: removeTop,
+      remainingTrades: remaining.length,
+      newAvgR: Math.round(avgR * 1000) / 1000,
+      newPF: Math.round(pf * 100) / 100,
+      avgRDelta: Math.round(avgRDelta * 1000) / 1000,
+      pfDelta: Math.round(pfDelta * 100) / 100,
+      warning,
+    };
+  };
+
+  return [1, 3, 5].map(n => {
+    if (rValues.length <= n) return null;
+    return computeImpact(n);
+  }).filter(Boolean) as OutlierImpact[];
+}
+
+function recalculateAvgWithoutTop(sortedR: number[], removeTop: number): number {
+  const remaining = sortedR.slice(removeTop);
+  if (remaining.length === 0) return 0;
+  return remaining.reduce((a, v) => a + v, 0) / remaining.length;
+}
+
+// ── Preset comparison table helper ────────────────────────────────────────────
+
+export interface PresetComparison {
+  presetId: string;
+  label: string;
+  stability: StabilityMetrics;
+  outlier: OutlierImpact[];
+  contributions: FilterContribution[];
+}
+
+export function compareAllPresets(trades: TradeRow[]): PresetComparison[] {
+  return RESEARCH_PRESETS.map(preset => ({
+    presetId: preset.id,
+    label: preset.label,
+    stability: computeStabilityMetrics(preset.filter, trades),
+    outlier: detectOutlierImpact(preset.filter, trades),
+    contributions: analyzeFilterContributions(preset.filter, trades),
+  }));
+}
